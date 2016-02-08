@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+struct WaveDecoder;
 typedef struct WaveDecoder WaveDecoder;
 
 WaveDecoder *wave_open_file(const char *filename);
