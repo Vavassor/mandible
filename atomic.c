@@ -12,8 +12,7 @@
 #define COMPILER_GCC
 #endif 
 
-bool atomic_flag_test_and_set(AtomicFlag* flag)
-{
+bool atomic_flag_test_and_set(AtomicFlag* flag) {
 #if defined(COMPILER_MSVC)
     return (bool) _InterlockedExchange((volatile long*) flag, 1L);
 #elif defined(COMPILER_GCC)
@@ -21,8 +20,7 @@ bool atomic_flag_test_and_set(AtomicFlag* flag)
 #endif
 }
 
-void atomic_flag_clear(AtomicFlag* flag)
-{
+void atomic_flag_clear(AtomicFlag* flag) {
 #if defined(COMPILER_MSVC)
     _InterlockedExchange((volatile long*) flag, 0L);
     MemoryBarrier();
@@ -32,8 +30,7 @@ void atomic_flag_clear(AtomicFlag* flag)
 #endif
 }
 
-void atomic_bool_store(AtomicBool* b, bool value)
-{
+void atomic_bool_store(AtomicBool* b, bool value) {
 #if defined(COMPILER_MSVC)
     _InterlockedExchange((volatile long*) b, (long) value);
 #elif defined(COMPILER_GCC)
@@ -41,8 +38,7 @@ void atomic_bool_store(AtomicBool* b, bool value)
 #endif
 }
 
-bool atomic_bool_load(AtomicBool* b)
-{
+bool atomic_bool_load(AtomicBool* b) {
 #if defined(COMPILER_MSVC)
     return (bool) _InterlockedAdd((volatile long*) b, 0L);
 #elif defined(COMPILER_GCC)
