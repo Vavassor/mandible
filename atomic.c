@@ -45,3 +45,19 @@ bool atomic_bool_load(AtomicBool* b) {
     return (bool) __sync_fetch_and_add(b, 0L);
 #endif
 }
+
+void atomic_int_store(AtomicInt* i, long value) {
+#if defined(COMPILER_MSVC)
+    _InterlockedExchange((volatile long*) i, value);
+#elif defined(COMPILER_GCC)
+    __sync_lock_test_and_set(i, value);
+#endif
+}
+
+long atomic_int_load(AtomicInt* i) {
+#if defined(COMPILER_MSVC)
+    return _InterlockedAdd((volatile long*) i, 0L)
+#elif defined(COMPILER_GCC)
+    return __sync_fetch_and_add(i, 0L);
+#endif
+}

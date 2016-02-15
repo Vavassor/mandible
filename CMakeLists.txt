@@ -6,6 +6,7 @@ set (INCLUDES
     atomic.h
     audio.h
     evdev_text.h
+    glx_extensions.h
     input.h
     logging.h
     sized_types.h
@@ -22,6 +23,7 @@ set (SOURCES
     atomic.c
     audio.cpp
     evdev_text.c
+    glx_extensions.c
     input.cpp
     logging.cpp
     main.cpp
@@ -53,10 +55,8 @@ set_target_properties (mandible PROPERTIES COMPILE_DEFINITIONS_MINSIZEREL ${RELE
 
 # ----- LIBRARIES -----
 set (LIBRARIES
-    xcb
-    xcb-icccm
-    xcb-keysyms
-    xcb-shm
+    X11
+    GL
     udev
     pthread
     asound

@@ -7,12 +7,11 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-#include <xcb/xcb.h>
-#include <xcb/xcb_icccm.h>
-#include <xcb/xcb_keysyms.h>
-#include <xcb/shm.h>
+#include <X11/X.h>
+#include <X11/Xlib.h>
+#include <GL/glx.h>
 
-#include <sys/shm.h>
+#include "glx_extensions.h"
 
 #include <time.h>
 
@@ -145,16 +144,14 @@ struct Framebuffer {
     u8 *pixels;
     int width;
     int height;
-    int shmid;
-    xcb_shm_seg_t segment;
 };
 
-static void double_vertically(Framebuffer *to, Canvas *from) {
+static void double_vertically_and_flip(Framebuffer *to, Canvas *from) {
     int w = from->width;
     int h = 2 * from->height;
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
-            int ti = 4 * (y * to->width + x);
+            int ti = 4 * ((h - y) * to->width + x);
             int fi = 4 * ((y / 2) * from->width + x);
             for (int i = 0; i < 4; ++i) {
                 to->pixels[ti+i] = from->buffer[fi+i];
@@ -214,10 +211,10 @@ static void swap_red_and_blue(u32 *out, const u32 *RESTRICT in, int pixel_count)
     }
 }
 
-static xcb_pixmap_t load_pixmap(xcb_connection_t *connection,
-                                xcb_drawable_t drawable,
-                                xcb_gcontext_t graphics_context,
-                                const char *name) {
+static Pixmap load_pixmap(Display *display, Drawable drawable,
+                          const char *name) {
+    Pixmap pixmap;
+
     int width;
     int height;
     int bytes_per_pixel;
@@ -225,22 +222,28 @@ static xcb_pixmap_t load_pixmap(xcb_connection_t *connection,
 
     swap_red_and_blue_in_place(reinterpret_cast<u32 *>(pixel_data), width * height);
 
-    xcb_pixmap_t pixmap = xcb_generate_id(connection);
-    xcb_create_pixmap(connection, 24, pixmap, drawable, width, height);
-    xcb_put_image(connection, XCB_IMAGE_FORMAT_Z_PIXMAP, pixmap,
-                  graphics_context, width, height, 0, 0, 0, 24,
-                  4 * width * height, pixel_data);
+    pixmap = XCreatePixmap(display, drawable, width, height, 32);
+#if 0
+    XImage *image = XCreateImage(display, CopyFromParent, 32, ZPixmap, 0,
+                                 reinterpret_cast<char *>(pixel_data),
+                                 width, height, 32, 0);
+    GC graphics_context = XCreateGC(display, pixmap, 0, NULL);
+    XPutImage(display, pixmap, graphics_context, image, 0, 0, 0, 0, width, height);
+    XFreeGC(display, graphics_context);
+    XDestroyImage(image);
+#endif
 
     stbi_image_free(pixel_data);
+
     return pixmap;
 }
 
-static void unload_pixmap(xcb_connection_t *connection, xcb_pixmap_t pixmap) {
-    xcb_free_pixmap(connection, pixmap);
+static void unload_pixmap(Display *display, Pixmap pixmap) {
+    XFreePixmap(display, pixmap);
 }
 
-static void set_icons(xcb_connection_t *connection, xcb_window_t window,
-                      xcb_atom_t net_wm_icon, Image *icons, int icon_count) {
+static void set_icons(Display *display, Window window, Atom net_wm_icon,
+                      Atom cardinal, Image *icons, int icon_count) {
     int total_size = 0;
     for (int i = 0; i < icon_count; ++i) {
         total_size += 2 + icons[i].width * icons[i].height;
@@ -255,22 +258,18 @@ static void set_icons(xcb_connection_t *connection, xcb_window_t window,
         swap_red_and_blue(buffer, data, pixel_count);
         buffer += pixel_count;
     }
-    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, window, net_wm_icon,
-                        XCB_ATOM_CARDINAL, 32, total_size, icon_buffer);
+    XChangeProperty(display, window, net_wm_icon, cardinal, 32,
+                    PropModeReplace,
+                    reinterpret_cast<const unsigned char *>(icon_buffer),
+                    total_size);
     std::free(icon_buffer);
 }
 
-static const char *xcb_connection_error_description(int error) {
-    switch (error) {
-        case XCB_CONN_ERROR:                   return "Connection error because socket, pipe and other stream errors occurred.";
-        case XCB_CONN_CLOSED_EXT_NOTSUPPORTED: return "Connection shutdown because extension was not supported.";
-        case XCB_CONN_CLOSED_MEM_INSUFFICIENT: return "Connection closed because it ran out of memory.";
-        case XCB_CONN_CLOSED_REQ_LEN_EXCEED:   return "Connection closed exceeding request length that the server accepts.";
-        case XCB_CONN_CLOSED_PARSE_ERR:        return "Connection closed because an error occurred while parsing display string.";
-        case XCB_CONN_CLOSED_INVALID_SCREEN:   return "Connection closed because the server does not have a screen matching the display.";
-        case XCB_CONN_CLOSED_FDPASSING_FAILED: return "Connection closed because some FD passing operation failed.";
-    }
-    return "unknown error";
+static int error_handler(Display *display, XErrorEvent *event) {
+    char text[128];
+    XGetErrorText(display, event->error_code, text, sizeof text);
+    LOG_ERROR("%s", text);
+    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -282,193 +281,161 @@ int main(int argc, char *argv[]) {
         "Icon.png",
     };
 
-    xcb_connection_t *connection;
-    int default_screen_number;
-    xcb_screen_t *default_screen;
-    xcb_window_t window;
-    xcb_atom_t wm_protocols;
-    xcb_atom_t wm_delete_window;
-    xcb_atom_t atom_utf8_string;
-    xcb_atom_t net_wm_name;
-    xcb_atom_t net_wm_icon_name;
-    xcb_atom_t net_wm_icon;
-    xcb_gcontext_t graphics_context;
-    xcb_pixmap_t icccm_icon;
-    xcb_key_symbols_t *key_symbols;
+    bool vertical_synchronization = false;
+
+    Display *display; // the connection to the X server
+    int default_screen;
+    Colormap colormap;
+    Window window;
+    Atom wm_delete_window;
+    Atom atom_utf8_string;
+    Atom net_wm_name;
+    Atom net_wm_icon_name;
+    Atom net_wm_icon;
+    Atom cardinal;
+    XSizeHints *size_hints;
+    XWMHints *wm_hints;
+    Pixmap icccm_icon;
+    GLXContext rendering_context;
     snes_ntsc_t *ntsc_scaler;
     input::System *input_system;
     audio::System *audio_system;
     Clock clock;
     Canvas canvas;
     Canvas wide_canvas;
-    Framebuffer framebuffers[2];
+    Framebuffer framebuffer;
+
+    XSetErrorHandler(error_handler);
 
     // Connect to the X server
-    connection = xcb_connect(NULL, &default_screen_number);
-    int connection_error;
-    if ((connection_error = xcb_connection_has_error(connection))) {
-        LOG_ERROR("xcb connection failure: %s",
-                  xcb_connection_error_description(connection_error));
-        xcb_disconnect(connection);
+    display = XOpenDisplay(NULL);
+    if (!display) {
+        LOG_ERROR("Cannot connect to X server");
         return EXIT_FAILURE;
     }
-
-    // Use the default screen number from the initial connection to find the
-    // default screen (primary screen).
-    default_screen = NULL;
-    const xcb_setup_t *setup = xcb_get_setup(connection);
-    xcb_screen_iterator_t iterator = xcb_setup_roots_iterator(setup);
-    for (int i = 0; iterator.rem; xcb_screen_next(&iterator), ++i) {
-        if (i == default_screen_number) {
-            default_screen = iterator.data;
-        }
-    }
-    if (!default_screen) {
-        LOG_ERROR("The default screen could not be found. "
-                  "(looking for screen #%i)", default_screen_number);
-        xcb_disconnect(connection);
-        return EXIT_FAILURE;
-    }
+    default_screen = DefaultScreen(display);
 
     // The dimensions of the final canvas after up-scaling.
 
     int scaled_width = SNES_NTSC_OUT_WIDTH(canvas_width);
     int scaled_height = 2 * canvas_height;
 
-    // Create the window.
-    window = xcb_generate_id(connection);
-    u32 window_mask = XCB_CW_EVENT_MASK;
-    u32 window_values[2] = {
-        default_screen->white_pixel,
-        XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE |
-        XCB_EVENT_MASK_PROPERTY_CHANGE
+    // Choose the abstract "Visual" type that will be used to describe both
+    // the window and the OpenGL rendering context.
+
+    GLint visual_attributes[] = {
+        GLX_RGBA, GLX_DEPTH_SIZE, 24, GLX_DOUBLEBUFFER, None
     };
-    xcb_create_window(connection, XCB_COPY_FROM_PARENT, window,
-                      default_screen->root, 0, 0, scaled_width, scaled_height,
-                      1, XCB_WINDOW_CLASS_INPUT_OUTPUT,
-                      default_screen->root_visual, window_mask, window_values);
+    XVisualInfo *visual = glXChooseVisual(display, default_screen,
+                                          visual_attributes);
+    if (!visual) {
+        LOG_ERROR("Wasn't able to choose an appropriate Visual type given the"
+                  "requested attributes. [The Visual type contains information"
+                  "on color mappings for the display hardware]");
+    }
+
+    // Create the window.
+    colormap = XCreateColormap(display, DefaultRootWindow(display),
+                               visual->visual, AllocNone);
+    XSetWindowAttributes window_attributes = {};
+    window_attributes.colormap = colormap;
+    window_attributes.event_mask = KeyPressMask | KeyReleaseMask;
+    window = XCreateWindow(display, DefaultRootWindow(display),
+                           0, 0, scaled_width, scaled_height, 0, visual->depth,
+                           InputOutput, visual->visual,
+                           CWColormap | CWEventMask, &window_attributes);
+
+    // Register to recieve window close messages.
+    wm_delete_window = XInternAtom(display, "WM_DELETE_WINDOW", False);
+    XSetWMProtocols(display, window, &wm_delete_window, 1);
 
     // Make the window non-resizable.
-
-    xcb_size_hints_t hints;
-    xcb_icccm_size_hints_set_min_size(&hints, scaled_width, scaled_height);
-    xcb_icccm_size_hints_set_max_size(&hints, scaled_width, scaled_height);
-    xcb_icccm_set_wm_size_hints(connection, window, XCB_ATOM_WM_NORMAL_HINTS, &hints);
-
-    // Load all atoms needed for further setup. These are for setting
-    // various properties, telling the window manager what it needs to know.
-
-    const char* atom_names[] = {
-        "WM_PROTOCOLS",
-        "WM_DELETE_WINDOW",
-        "UTF8_STRING",
-        "_NET_WM_NAME",
-        "_NET_WM_ICON_NAME",
-        "_NET_WM_ICON",
-    };
-    xcb_intern_atom_cookie_t cookies[ARRAY_COUNT(atom_names)];
-    xcb_intern_atom_reply_t *replies[ARRAY_COUNT(atom_names)];
-    for (std::size_t i = 0; i < ARRAY_COUNT(atom_names); ++i) {
-        cookies[i] = xcb_intern_atom(connection, 1, std::strlen(atom_names[i]),
-                                     atom_names[i]);
+    size_hints = XAllocSizeHints();
+    if (!size_hints) {
+        LOG_ERROR("Insufficient memory was available to allocate XSizeHints"
+                  "which is used for making the window non-resizable.");
     }
-    for (std::size_t i = 0; i < ARRAY_COUNT(atom_names); ++i) {
-        replies[i] = xcb_intern_atom_reply(connection, cookies[i], NULL);
-    }
-    wm_protocols = replies[0]->atom;
-    wm_delete_window = replies[1]->atom;
-    atom_utf8_string = replies[2]->atom;
-    net_wm_name = replies[3]->atom;
-    net_wm_icon_name = replies[4]->atom;
-    net_wm_icon = replies[5]->atom;
-
-    // Register for window closing events (WM_DELETE_WINDOW).
-    xcb_icccm_set_wm_protocols(connection, window, wm_protocols,
-                               1, &wm_delete_window);
+    size_hints->min_width = scaled_width;
+    size_hints->min_height = scaled_height;
+    size_hints->max_width = scaled_width;
+    size_hints->max_height = scaled_height;
+    size_hints->flags = PMinSize | PMaxSize;
+    XSetWMNormalHints(display, window, size_hints);
 
     // Set the window title.
 
-    // Set the ICCCM version of the window name. The type atom STRING denotes
-    // the string is encoded with only ISO Latin-1 characters, tab, and
-    // line-feed.
-    xcb_icccm_set_wm_name(connection, window, XCB_ATOM_STRING, 8,
-                          std::strlen(title), title);
-    xcb_icccm_set_wm_icon_name(connection, window, XCB_ATOM_STRING, 8,
-                               std::strlen(title), title);
+    // Set the ICCCM version of the window name. This string is encoded with
+    // the Host Portable Character Encoding which is ISO Latin-1 characters,
+    // tab, and line-feed.
+    XStoreName(display, window, title);
+    XSetIconName(display, window, title);
 
     // Set the Extended Window Manager Hints version of the window name, which
-    // overrides the ICCCM one if it's supported. This allows specifying a
-    // UTF-8 encoded title.
-    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, window,
-                        net_wm_name, atom_utf8_string,
-                        8, std::strlen(title), title);
-    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, window,
-                        net_wm_icon_name, atom_utf8_string,
-                        8, std::strlen(title), title);
-
-    // Create a graphics context to use for copying the canvas to the window
-    // every frame.
-    graphics_context = xcb_generate_id(connection);
-    u32 gc_mask = XCB_GC_FOREGROUND;
-    u32 gc_values[] = {
-        default_screen->black_pixel
-    };
-    xcb_create_gc(connection, graphics_context, window, gc_mask, gc_values);
+    // overrides the previous if supported. This allows specifying a UTF-8
+    // encoded name.
+    net_wm_name = XInternAtom(display, "_NET_WM_NAME", False);
+    net_wm_icon_name = XInternAtom(display, "_NET_WM_ICON_NAME", False);
+    atom_utf8_string = XInternAtom(display, "UTF8_STRING", False);
+    XChangeProperty(display, window, net_wm_name, atom_utf8_string, 8,
+                    PropModeReplace,
+                    reinterpret_cast<const unsigned char*>(title),
+                    std::strlen(title));
+    XChangeProperty(display, window, net_wm_icon_name, atom_utf8_string,
+                    8, PropModeReplace,
+                    reinterpret_cast<const unsigned char*>(title),
+                    std::strlen(title));
 
     // Set the window icons.
 
-    // Set the ICCCM pixmap for the basic icon.
-    icccm_icon = load_pixmap(connection, default_screen->root,
-                             graphics_context, icon_names[0]);
-    xcb_icccm_wm_hints_t wm_hints;
-    xcb_icccm_wm_hints_set_icon_pixmap(&wm_hints, icccm_icon);
-    xcb_icccm_set_wm_hints(connection, window, &wm_hints);
+    // Set the Pixmap for the ICCCM version of the application icon.
+    icccm_icon = load_pixmap(display, DefaultRootWindow(display),
+                             icon_names[0]);
+    wm_hints = XAllocWMHints();
+    if (!wm_hints) {
+        LOG_ERROR("Insufficient memory available to allocate the XWMHints"
+                  "structure, which is needed for setting the ICCCM version"
+                  "of the application icon.");
+    }
+    wm_hints->icon_pixmap = icccm_icon;
+    wm_hints->flags = IconPixmapHint;
+    XSetWMHints(display, window, wm_hints);
 
     // Set the Extended Window Manager Hints version of the icons, which will
-    // override the ICCCM icon if the window manager supports it. This allows
+    // override the basic icon if the window manager supports it. This allows
     // for several sizes of icon to be specified as well as full transparency
     // in icons.
-
+    net_wm_icon = XInternAtom(display, "_NET_WM_ICON", False);
+    cardinal = XInternAtom(display, "CARDINAL", False);
     Image icons[ARRAY_COUNT(icon_names)];
     for (std::size_t i = 0; i < ARRAY_COUNT(icons); ++i) {
         load_image(icons + i, icon_names[i]);
     }
-    set_icons(connection, window, net_wm_icon, icons, ARRAY_COUNT(icons));
+    set_icons(display, window, net_wm_icon, cardinal, icons, ARRAY_COUNT(icons));
     for (std::size_t i = 0; i < ARRAY_COUNT(icons); ++i) {
         unload_image(icons + i);
     }
 
     // Make the window visible.
-    xcb_map_window(connection, window);
+    XMapWindow(display, window);
 
-    // Create the map needed for translating key codes.
-    key_symbols = xcb_key_symbols_alloc(connection);
-
-    xcb_shm_query_version_cookie_t shm_version_cookie = xcb_shm_query_version(connection);
-    xcb_generic_error_t *error = NULL;
-    xcb_shm_query_version_reply_t *shm_version_reply = xcb_shm_query_version_reply(connection, shm_version_cookie, &error);
-    if (shm_version_reply->major_version == 0) {
-        // @Incomplete: handle and log error
+    // Create the rendering context for OpenGL. The rendering context can only
+    // be "made current" after the window is mapped (with XMapWindow).
+    rendering_context = glXCreateContext(display, visual, NULL, True);
+    if (!rendering_context) {
+        LOG_ERROR("Couldn't create a GLX rendering context.");
     }
 
-    for (std::size_t i = 0; i < ARRAY_COUNT(framebuffers); ++i) {
-        Framebuffer *f = framebuffers + i;
-        f->width = scaled_width;
-        f->height = scaled_height;
-
-        f->shmid = shmget(IPC_PRIVATE, 4 * f->width * f->height, IPC_CREAT | 0777);
-        if (f->shmid <= 0) {
-            // @Incomplete: handle and log error
-        }
-        f->pixels = static_cast<u8 *>(shmat(f->shmid, 0, 0));
-        if (f->pixels == static_cast<u8 *>(f->pixels)) {
-            // @Incomplete: handle and log error
-        }
-        shmctl(f->shmid, IPC_RMID, NULL);
-
-        f->segment = xcb_generate_id(connection);
-        xcb_shm_attach(connection, f->segment, f->shmid, false);
+    Bool made_current = glXMakeCurrent(display, window, rendering_context);
+    if (!made_current) {
+        LOG_ERROR("Failed to attach the GLX context to the window.");
     }
+
+    load_glx_extensions(display, default_screen);
+
+    // Initialise the framebuffer.
+    framebuffer.width = scaled_width;
+    framebuffer.height = scaled_height;
+    framebuffer.pixels = static_cast<u8 *>(std::malloc(4 * framebuffer.width * framebuffer.height));
 
     // Create the scaler used to up-scale the canvas and simulate NTSC cable
     // colour-bleeding/artifacts.
@@ -492,8 +459,17 @@ int main(int argc, char *argv[]) {
     Atlas atlas;
     load_atlas(&atlas, "Assets/player.png");
 
-    // Begin the main loop after flushing the connection.
-    xcb_flush(connection);
+    // Enable Vertical Synchronisation.
+    if (!have_ext_swap_control) {
+        glXSwapIntervalEXT(display, window, 1);
+        vertical_synchronization = true;
+    }
+
+    LOG_DEBUG("vertical synchronization: %s",
+              (vertical_synchronization) ? "true" : "false");
+
+    // Flush the connection to the display before starting the main loop.
+    XSync(display, False);
 
     // frames-per-second
     struct {
@@ -509,14 +485,10 @@ int main(int argc, char *argv[]) {
         double frame_start_time = get_time(&clock);
 
         // Push the last frame as soon as possible.
-        Framebuffer *framebuffer = framebuffers + frame_flip;
-        frame_flip ^= 1;
-        xcb_shm_put_image(connection, window, graphics_context,
-                          framebuffer->width, framebuffer->height,
-                          0, 0, framebuffer->width, framebuffer->height,
-                          0, 0, 24, XCB_IMAGE_FORMAT_Z_PIXMAP, 0,
-                          framebuffer->segment, 0);
-        xcb_flush(connection);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDrawPixels(framebuffer.width, framebuffer.height, GL_BGRA,
+                     GL_UNSIGNED_INT_8_8_8_8_REV, framebuffer.pixels);
+        glXSwapBuffers(display, window);
 
         // Then draw the next frame.
         canvas_fill(&canvas, 0x00ff00);
@@ -531,87 +503,74 @@ int main(int argc, char *argv[]) {
             int y = position_y;
             if (input::is_button_tapped(controller, input::USER_BUTTON_A)) {
                 y += 10;
+                audio::play_once(audio_system, "Assets/Jump.wav");
             }
             draw_rectangle(&canvas, &atlas, x, y, 0, 0, 128, 128);
         }
 
+        frame_flip ^= 1;
         snes_ntsc_blit(ntsc_scaler, reinterpret_cast<SNES_NTSC_IN_T *>(canvas.buffer),
                        canvas.width, frame_flip, canvas.width, canvas.height,
                        wide_canvas.buffer, 4 * wide_canvas.width);
 
-        framebuffer = framebuffers + frame_flip;
-        double_vertically(framebuffer, &wide_canvas);
+        double_vertically_and_flip(&framebuffer, &wide_canvas);
 
         input::poll(input_system);
 
         // Flush the events queue and respond to any pertinent events.
-        xcb_generic_event_t *event;
-        xcb_generic_event_t *next_event = NULL;
-        while ((event = (next_event) ? next_event : xcb_poll_for_event(connection))) {
-            next_event = NULL;
-            switch (event->response_type & ~0x80) {
-                case 0: {
-                    xcb_generic_error_t *error = reinterpret_cast<xcb_generic_error_t *>(event);
-                    LOG_ERROR("error code: %X", error->error_code);
-                    quit = true;
-                } break;
-
-                case XCB_KEY_PRESS: {
-                    xcb_key_press_event_t *key_press = reinterpret_cast<xcb_key_press_event_t *>(event);
-                    xcb_keysym_t keysym = xcb_key_press_lookup_keysym(key_symbols, key_press, 0);
+        XEvent event = {};
+        while (XPending(display) > 0) {
+            XNextEvent(display, &event);
+            switch (event.type) {
+                case KeyPress: {
+                    XKeyEvent key_press = event.xkey;
+                    KeySym keysym = XLookupKeysym(&key_press, 0);
                     input::on_key_press(input_system, keysym);
                 } break;
 
-                case XCB_KEY_RELEASE: {
-                    xcb_key_release_event_t *key_release = reinterpret_cast<xcb_key_release_event_t *>(event);
+                case KeyRelease: {
+                    XKeyEvent key_release = event.xkey;
                     bool auto_repeated = false;
 
                     // Examine the next event in the queue and if it's a
                     // key-press generated by auto-repeating, discard it and
                     // ignore this key release.
 
-                    xcb_generic_event_t *lookahead = xcb_poll_for_event(connection);
-                    if (lookahead && (lookahead->response_type & ~0x80) == XCB_KEY_PRESS) {
-                        xcb_key_press_event_t *next_press = reinterpret_cast<xcb_key_press_event_t *>(lookahead);
-                        if (key_release->time == next_press->time &&
-                            key_release->detail == next_press->detail) {
+                    XEvent lookahead = {};
+                    if (XPending(display) > 0 && XPeekEvent(display, &lookahead)) {
+                        XKeyEvent next_press = lookahead.xkey;
+                        if (key_release.time == next_press.time &&
+                            key_release.keycode == next_press.keycode) {
+                            // Remove the lookahead event.
+                            XNextEvent(display, &lookahead);
                             auto_repeated = true;
                         }
                     }
 
                     if (!auto_repeated) {
-                        xcb_keysym_t keysym = xcb_key_release_lookup_keysym(key_symbols, key_release, 0);
+                        KeySym keysym = XLookupKeysym(&key_release, 0);
                         input::on_key_release(input_system, keysym);
-
-                        // Since the key release was not generated for
-                        // auto-repeating purposes, the event removed for
-                        // looking ahead was also genuine and needs to be saved
-                        // so that it can be processed normally next cycle.
-                        next_event = lookahead;
                     }
                 } break;
 
-                case XCB_MAPPING_NOTIFY: {
-                    xcb_mapping_notify_event_t *mapping_notify = reinterpret_cast<xcb_mapping_notify_event_t *>(event);
-                    xcb_refresh_keyboard_mapping(key_symbols, mapping_notify);
-                } break;
-
-                case XCB_CLIENT_MESSAGE: {
-                    xcb_client_message_event_t *client_message = reinterpret_cast<xcb_client_message_event_t *>(event);
-                    if (client_message->data.data32[0] == wm_delete_window) {
-                        xcb_destroy_window(connection, client_message->window);
+                case ClientMessage: {
+                    XClientMessageEvent client_message = event.xclient;
+                    if (client_message.data.l[0] == wm_delete_window) {
+                        XDestroyWindow(display, window);
                         quit = true;
                     }
                 } break;
             }
-            std::free(event);
         }
 
-        // Sleep off the remaining time until the next frame.
+        // If the swap-buffer call isn't set to wait for the vertical retrace,
+        // the remaining time needs to be waited off here until the next frame.
 
-        double frame_thusfar = get_time(&clock) - frame_start_time;
-        if (frame_thusfar < frame_frequency) {
-            go_to_sleep(&clock, frame_frequency - frame_thusfar);
+        if (!vertical_synchronization) {
+            double frame_thusfar = get_time(&clock) - frame_start_time;
+            if (frame_thusfar < frame_frequency) {
+                go_to_sleep(&clock, frame_frequency - frame_thusfar);
+            }
         }
 
         // Update the frames_per_second counter.
@@ -628,25 +587,23 @@ int main(int argc, char *argv[]) {
 
     // Unload all assets.
     unload_atlas(&atlas);
-    unload_pixmap(connection, icccm_icon);
-
-    // Free the memory used by the key map.
-    xcb_key_symbols_free(key_symbols);
+    unload_pixmap(display, icccm_icon);
 
     // Shutdown all systems.
     audio::shutdown(audio_system);
     input::shutdown(input_system);
 
     // Free and destroy any system resources.
-    for (std::size_t i = 0; i < ARRAY_COUNT(framebuffers); ++i) {
-        xcb_shm_detach(connection, framebuffers[i].segment);
-        shmdt(framebuffers[i].pixels);
-    }
+    std::free(framebuffer.pixels);
     std::free(wide_canvas.buffer);
     std::free(canvas.buffer);
     std::free(ntsc_scaler);
-    xcb_free_gc(connection, graphics_context);
-    xcb_disconnect(connection);
+
+    glXDestroyContext(display, rendering_context);
+    XFree(wm_hints);
+    XFree(size_hints);
+    XFreeColormap(display, colormap);
+    XCloseDisplay(display);
 
     return 0;
 }

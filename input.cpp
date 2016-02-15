@@ -433,11 +433,14 @@ static void check_device_monitor(udev_monitor *device_monitor, DeviceCollection 
         const char *action = udev_device_get_action(device);
         if (strings_match(action, "add")) {
             add_device(device_collection, device);
+
         } else if (strings_match(action, "remove")) {
             remove_device(device_collection, device);
+
         } else if (strings_match(action, "change")) {
             remove_device(device_collection, device);
             add_device(device_collection, device);
+
         } else {
             LOG_ERROR("Device change event of type \"%s\" is not a type that's handled.", action);
         }
