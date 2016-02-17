@@ -62,7 +62,7 @@ struct WaveDecoder {
         u32 block_size;
     } encoded;
 
-    s64 data_chunk_position; // where the data chunk is in the file, as an offset in bytes;
+    s64 data_chunk_position; // where the data chunk is in the file, as an offset in bytes
     FILE *file;
     bool end_of_file;
     u32 frame_count;

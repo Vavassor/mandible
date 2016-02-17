@@ -19,8 +19,26 @@
 #include <cstring>
 #include <cmath>
 
+#if defined(__GNUC__)
+#define RESTRICT __restrict__
+#elif defined(_MSC_VER)
+#define RESTRICT __declspec(restrict)
+#endif
+
 #define ARRAY_COUNT(a) \
     ((sizeof(a) / sizeof(*(a))) / static_cast<size_t>(!(sizeof(a) % sizeof(*(a)))))
+
+#define FOR_N(index, n) \
+    for (auto (index) = 0; (index) < (n); ++(index))
+
+#define ALLOCATE_ARRAY(type, count) \
+    static_cast<type *>(std::malloc(sizeof(type) * (count)))
+
+#define ALLOCATE_STRUCT(type) \
+    static_cast<type *>(std::malloc(sizeof(type)))
+
+#define DEALLOCATE(a) \
+    std::free(a)
 
 struct Atlas {
     u8 *data;
@@ -45,8 +63,7 @@ struct Image {
 };
 
 static void load_image(Image *image, const char *name) {
-    image->data = stbi_load(name, &image->width, &image->height,
-                            &image->bytes_per_pixel, 0);
+    image->data = stbi_load(name, &image->width, &image->height, &image->bytes_per_pixel, 0);
 }
 
 static void unload_image(Image *image) {
@@ -197,13 +214,7 @@ static void swap_red_and_blue_in_place(u32 *pixels, int pixel_count) {
     }
 }
 
-#if defined(__GNUC__)
-#define RESTRICT __restrict__
-#elif defined(_MSC_VER)
-#define RESTRICT __declspec(restrict)
-#endif
-
-static void swap_red_and_blue(u32 *out, const u32 *RESTRICT in, int pixel_count) {
+static void swap_red_and_blue(unsigned long *out, const u32 *in, int pixel_count) {
     for (int i = 0; i < pixel_count; ++i) {
         out[i] = (in[i] & 0xFF00FF00) |
                  (in[i] & 0xFF0000) >> 16 |
@@ -211,31 +222,50 @@ static void swap_red_and_blue(u32 *out, const u32 *RESTRICT in, int pixel_count)
     }
 }
 
-static Pixmap load_pixmap(Display *display, Drawable drawable,
-                          const char *name) {
-    Pixmap pixmap;
-
+static bool load_pixmap(Pixmap *out_pixmap, Display *display,
+                        const char *name) {
     int width;
     int height;
     int bytes_per_pixel;
     u8 *pixel_data = stbi_load(name, &width, &height, &bytes_per_pixel, 0);
+    if (!pixel_data) {
+        return false;
+    }
 
-    swap_red_and_blue_in_place(reinterpret_cast<u32 *>(pixel_data), width * height);
+    swap_red_and_blue_in_place(reinterpret_cast<u32 *>(pixel_data),
+                               width * height);
 
-    pixmap = XCreatePixmap(display, drawable, width, height, 32);
-#if 0
-    XImage *image = XCreateImage(display, CopyFromParent, 32, ZPixmap, 0,
-                                 reinterpret_cast<char *>(pixel_data),
-                                 width, height, 32, 0);
+    XImage *image;
+    int depth = 8 * bytes_per_pixel;
+    int bitmap_pad; // XCreateImage only accepts values of 8, 16, or 32
+    switch (depth) {
+        case 8: bitmap_pad = 8; break;
+        case 16: bitmap_pad = 16; break;
+        default: bitmap_pad = 32; break;
+    }
+    image = XCreateImage(display, CopyFromParent, depth, ZPixmap, 0,
+                         reinterpret_cast<char *>(pixel_data),
+                         width, height, bitmap_pad, 0);
+    if (!image) {
+        stbi_image_free(pixel_data);
+        return false;
+    }
+
+    Pixmap pixmap = XCreatePixmap(display, DefaultRootWindow(display),
+                                  width, height, depth);
     GC graphics_context = XCreateGC(display, pixmap, 0, NULL);
-    XPutImage(display, pixmap, graphics_context, image, 0, 0, 0, 0, width, height);
+    XPutImage(display, pixmap, graphics_context, image,
+              0, 0, 0, 0, width, height);
     XFreeGC(display, graphics_context);
+
+    // XDestroyImage actually deallocates not only the image but the pixel_data
+    // memory passed into XCreateImage, so there's no need to call
+    // stbi_image_free(pixel_data) and doing so would be "freeing freed
+    // memory".
     XDestroyImage(image);
-#endif
 
-    stbi_image_free(pixel_data);
-
-    return pixmap;
+    *out_pixmap = pixmap;
+    return true;
 }
 
 static void unload_pixmap(Display *display, Pixmap pixmap) {
@@ -244,24 +274,31 @@ static void unload_pixmap(Display *display, Pixmap pixmap) {
 
 static void set_icons(Display *display, Window window, Atom net_wm_icon,
                       Atom cardinal, Image *icons, int icon_count) {
-    int total_size = 0;
+    int total_pixels = 0;
     for (int i = 0; i < icon_count; ++i) {
-        total_size += 2 + icons[i].width * icons[i].height;
+        total_pixels += 2 + icons[i].width * icons[i].height;
     }
-    u32 *icon_buffer = static_cast<u32 *>(std::malloc(sizeof(u32) * total_size));
-    u32 *buffer = icon_buffer;
+
+    unsigned long *icon_buffer;
+    std::size_t total_size = sizeof(unsigned long) * total_pixels;
+    icon_buffer = static_cast<unsigned long *>(std::malloc(total_size));
+    unsigned long *buffer = icon_buffer;
     for (int i = 0; i < icon_count; ++i) {
         *buffer++ = icons[i].width;
         *buffer++ = icons[i].height;
-        u32 *data = reinterpret_cast<u32 *>(icons[i].data);
         int pixel_count = icons[i].width * icons[i].height;
+        u32 *data = reinterpret_cast<u32 *>(icons[i].data);
         swap_red_and_blue(buffer, data, pixel_count);
         buffer += pixel_count;
     }
+
+    // The buffer passed to XChangeProperty must be of type long when passing
+    // a format value of 32, EVEN IF the size of a long is not 32-bits.
     XChangeProperty(display, window, net_wm_icon, cardinal, 32,
                     PropModeReplace,
                     reinterpret_cast<const unsigned char *>(icon_buffer),
-                    total_size);
+                    total_pixels);
+
     std::free(icon_buffer);
 }
 
@@ -284,7 +321,6 @@ int main(int argc, char *argv[]) {
     bool vertical_synchronization = false;
 
     Display *display; // the connection to the X server
-    int default_screen;
     Colormap colormap;
     Window window;
     Atom wm_delete_window;
@@ -304,6 +340,8 @@ int main(int argc, char *argv[]) {
     Canvas canvas;
     Canvas wide_canvas;
     Framebuffer framebuffer;
+    Atlas atlas;
+    audio::StreamId test_music;
 
     XSetErrorHandler(error_handler);
 
@@ -313,7 +351,6 @@ int main(int argc, char *argv[]) {
         LOG_ERROR("Cannot connect to X server");
         return EXIT_FAILURE;
     }
-    default_screen = DefaultScreen(display);
 
     // The dimensions of the final canvas after up-scaling.
 
@@ -326,7 +363,7 @@ int main(int argc, char *argv[]) {
     GLint visual_attributes[] = {
         GLX_RGBA, GLX_DEPTH_SIZE, 24, GLX_DOUBLEBUFFER, None
     };
-    XVisualInfo *visual = glXChooseVisual(display, default_screen,
+    XVisualInfo *visual = glXChooseVisual(display, DefaultScreen(display),
                                           visual_attributes);
     if (!visual) {
         LOG_ERROR("Wasn't able to choose an appropriate Visual type given the"
@@ -388,8 +425,10 @@ int main(int argc, char *argv[]) {
     // Set the window icons.
 
     // Set the Pixmap for the ICCCM version of the application icon.
-    icccm_icon = load_pixmap(display, DefaultRootWindow(display),
-                             icon_names[0]);
+    bool icccm_icon_loaded = load_pixmap(&icccm_icon, display, icon_names[0]);
+    if (!icccm_icon_loaded) {
+        LOG_ERROR("Failed to load the ICCCM version of the application icon.");
+    }
     wm_hints = XAllocWMHints();
     if (!wm_hints) {
         LOG_ERROR("Insufficient memory available to allocate the XWMHints"
@@ -407,11 +446,11 @@ int main(int argc, char *argv[]) {
     net_wm_icon = XInternAtom(display, "_NET_WM_ICON", False);
     cardinal = XInternAtom(display, "CARDINAL", False);
     Image icons[ARRAY_COUNT(icon_names)];
-    for (std::size_t i = 0; i < ARRAY_COUNT(icons); ++i) {
+    FOR_N(i, ARRAY_COUNT(icons)) {
         load_image(icons + i, icon_names[i]);
     }
     set_icons(display, window, net_wm_icon, cardinal, icons, ARRAY_COUNT(icons));
-    for (std::size_t i = 0; i < ARRAY_COUNT(icons); ++i) {
+    FOR_N(i, ARRAY_COUNT(icons)) {
         unload_image(icons + i);
     }
 
@@ -430,16 +469,16 @@ int main(int argc, char *argv[]) {
         LOG_ERROR("Failed to attach the GLX context to the window.");
     }
 
-    load_glx_extensions(display, default_screen);
+    load_glx_extensions(display, DefaultScreen(display));
 
     // Initialise the framebuffer.
     framebuffer.width = scaled_width;
     framebuffer.height = scaled_height;
-    framebuffer.pixels = static_cast<u8 *>(std::malloc(4 * framebuffer.width * framebuffer.height));
+    framebuffer.pixels = ALLOCATE_ARRAY(u8, 4 * framebuffer.width * framebuffer.height);
 
     // Create the scaler used to up-scale the canvas and simulate NTSC cable
     // colour-bleeding/artifacts.
-    ntsc_scaler = static_cast<snes_ntsc_t *>(std::malloc(sizeof(snes_ntsc_t)));
+    ntsc_scaler = ALLOCATE_STRUCT(snes_ntsc_t);
     snes_ntsc_init(ntsc_scaler, &snes_ntsc_composite);
 
     // Initialise any other resources needed before the main loop starts.
@@ -450,14 +489,14 @@ int main(int argc, char *argv[]) {
 
     canvas.width = canvas_width;
     canvas.height = canvas_height;
-    canvas.buffer = static_cast<u8 *>(std::malloc(2 * canvas.width * canvas.height));
+    canvas.buffer = ALLOCATE_ARRAY(u8, 2 * canvas.width * canvas.height);
 
     wide_canvas.width = scaled_width;
     wide_canvas.height = canvas_height;
-    wide_canvas.buffer = static_cast<u8 *>(std::malloc(4 * wide_canvas.width * wide_canvas.height));
+    wide_canvas.buffer = ALLOCATE_ARRAY(u8, 4 * wide_canvas.width * wide_canvas.height);
 
-    Atlas atlas;
     load_atlas(&atlas, "Assets/player.png");
+    audio::start_stream(audio_system, "grass.ogg", 1.0f, &test_music);
 
     // Enable Vertical Synchronisation.
     if (!have_ext_swap_control) {
@@ -503,7 +542,7 @@ int main(int argc, char *argv[]) {
             int y = position_y;
             if (input::is_button_tapped(controller, input::USER_BUTTON_A)) {
                 y += 10;
-                audio::play_once(audio_system, "Assets/Jump.wav");
+                audio::play_once(audio_system, "Jump.wav", 0.5f);
             }
             draw_rectangle(&canvas, &atlas, x, y, 0, 0, 128, 128);
         }
@@ -586,6 +625,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Unload all assets.
+    audio::stop_stream(audio_system, test_music);
     unload_atlas(&atlas);
     unload_pixmap(display, icccm_icon);
 
@@ -594,10 +634,10 @@ int main(int argc, char *argv[]) {
     input::shutdown(input_system);
 
     // Free and destroy any system resources.
-    std::free(framebuffer.pixels);
-    std::free(wide_canvas.buffer);
-    std::free(canvas.buffer);
-    std::free(ntsc_scaler);
+    DEALLOCATE(framebuffer.pixels);
+    DEALLOCATE(wide_canvas.buffer);
+    DEALLOCATE(canvas.buffer);
+    DEALLOCATE(ntsc_scaler);
 
     glXDestroyContext(display, rendering_context);
     XFree(wm_hints);
