@@ -3,6 +3,10 @@
 #include "snes_ntsc.h"
 #include "input.h"
 #include "audio.h"
+#include "monitoring.h"
+#include "font.h"
+#include "string_utilities.h"
+#include "unicode.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -48,7 +52,11 @@ struct Atlas {
 };
 
 static void load_atlas(Atlas *atlas, const char *name) {
-    atlas->data = stbi_load(name, &atlas->width, &atlas->height, &atlas->bytes_per_pixel, 0);
+    char path[256];
+    copy_string(path, "Assets/", sizeof path);
+    concatenate(path, name, sizeof path);
+    atlas->data = stbi_load(path, &atlas->width, &atlas->height,
+                            &atlas->bytes_per_pixel, 0);
 }
 
 static void unload_atlas(Atlas *atlas) {
@@ -154,6 +162,104 @@ static void scale_whole_canvas(Canvas *to, Canvas* from, int scale) {
     }
 }
 #endif
+
+// Text-rendering functions....................................................
+
+/*
+Distinguishes characters which have no visible mark or glyph. This is as
+opposed to "whitespace" characters, which includes the ogham space mark
+conditionally displayed as a glyph depending on context.
+*/
+static bool is_character_non_displayable(char32_t codepoint) {
+    switch (codepoint) {
+        case 0x9: // character tabulation
+        case 0xA: // line feed
+        case 0xB: // line tabulation
+        case 0xC: // form feed
+        case 0xD: // carriage return
+        case 0x20: // space
+        case 0x85: // next line
+        case 0xA0: // no-break space
+        case 0x2000: // en quad
+        case 0x2001: // em quad
+        case 0x2002: // en space
+        case 0x2003: // em space
+        case 0x2004: // three-per-em space
+        case 0x2005: // four-per-em space
+        case 0x2006: // six-per-em space
+        case 0x2007: // figure space
+        case 0x2008: // punctuation space
+        case 0x2009: // thin space
+        case 0x200A: // hair space
+        case 0x2028: // line separator
+        case 0x2029: // paragraph separator
+        case 0x202F: // narrow no-break space
+        case 0x205F: // medium mathematical space
+        case 0x3000: // ideographic space
+            return true;
+    }
+    return false;
+}
+
+// @Incomplete: This doesn't fully handle Unicode line breaks. If this turns
+// out to be insufficient, check the Lattice project for how to do more
+// complete line-break handling.
+static bool is_line_break(char32_t codepoint) {
+    switch (codepoint) {
+        case 0xA: // line feed
+        case 0xC: // form feed
+        case 0xD: // carriage return
+        case 0x85: // next line
+        case 0x2028: // line separator
+        case 0x2029: // paragraph separator
+            return true;
+    }
+    return false;
+}
+
+#define STACK_ALLOCATE_ARRAY(count, type) \
+    static_cast<type *>(alloca(sizeof(type) * (count)))
+
+static void draw_text(Canvas *canvas, Atlas *atlas, BmFont *font,
+                      const char *text, int cx, int cy) {
+
+    int char_count = std::strlen(text);
+    int codepoint_count = utf8_codepoint_count(text);
+    char32_t* codepoints = STACK_ALLOCATE_ARRAY(codepoint_count, char32_t);
+    utf8_to_utf32(text, char_count, codepoints, codepoint_count);
+
+    struct { int x, y; } pen;
+    pen.x = cx;
+    pen.y = cy;
+
+    char32_t prior_char = 0x0;
+    for (int i = 0; i < char_count; ++i) {
+        char32_t c = text[i];
+        FontGlyph *glyph = bm_font_get_character_mapping(font, c);
+
+        if (is_line_break(c)) {
+            pen.x = cx;
+            pen.y += font->leading;
+        } else {
+            pen.x += bm_font_get_kerning(font, prior_char, c);
+
+            if (is_character_non_displayable(c)) {
+                pen.x += glyph->x_advance;
+            } else {
+                int x = pen.x + glyph->x_offset;
+                int y = pen.y + glyph->y_offset;
+                int tx = glyph->texcoord.left;
+                int ty = glyph->texcoord.top;
+                int tw = glyph->texcoord.width;
+                int th = glyph->texcoord.height;
+                draw_rectangle(canvas, atlas, x, y, tx, ty, tw, th);
+                pen.x += font->tracking + glyph->x_advance;
+            }
+        }
+
+        prior_char = c;
+    }
+}
 
 // Framebuffer Functions.......................................................
 
@@ -340,7 +446,10 @@ int main(int argc, char *argv[]) {
     Canvas canvas;
     Canvas wide_canvas;
     Framebuffer framebuffer;
+    Monitor *monitor;
     Atlas atlas;
+    BmFont test_font;
+    Atlas test_font_atlas;
     audio::StreamId test_music;
 
     XSetErrorHandler(error_handler);
@@ -403,7 +512,7 @@ int main(int argc, char *argv[]) {
 
     // Set the ICCCM version of the window name. This string is encoded with
     // the Host Portable Character Encoding which is ISO Latin-1 characters,
-    // tab, and line-feed.
+    // space, tab, and line-feed.
     XStoreName(display, window, title);
     XSetIconName(display, window, title);
 
@@ -495,8 +604,13 @@ int main(int argc, char *argv[]) {
     wide_canvas.height = canvas_height;
     wide_canvas.buffer = ALLOCATE_ARRAY(u8, 4 * wide_canvas.width * wide_canvas.height);
 
-    load_atlas(&atlas, "Assets/player.png");
+    monitor = monitor_create();
+
+    load_atlas(&atlas, "player.png");
     audio::start_stream(audio_system, "grass.ogg", 1.0f, &test_music);
+
+    bm_font_load(&test_font, "Assets/droid_12.fnt");
+    load_atlas(&test_font_atlas, test_font.image.filename);
 
     // Enable Vertical Synchronisation.
     if (!have_ext_swap_control) {
@@ -523,6 +637,8 @@ int main(int argc, char *argv[]) {
         // Record when the frame starts.
         double frame_start_time = get_time(&clock);
 
+        BEGIN_MONITORING(monitor, rendering);
+
         // Push the last frame as soon as possible.
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glDrawPixels(framebuffer.width, framebuffer.height, GL_BGRA,
@@ -547,12 +663,21 @@ int main(int argc, char *argv[]) {
             draw_rectangle(&canvas, &atlas, x, y, 0, 0, 128, 128);
         }
 
+        {
+            monitor_dump(monitor);
+            draw_text(&canvas, &test_font_atlas, &test_font,
+                      "Feet tread on the bones\n"
+                      "nothing sees what we need.", 32, 32);
+        }
+
         frame_flip ^= 1;
         snes_ntsc_blit(ntsc_scaler, reinterpret_cast<SNES_NTSC_IN_T *>(canvas.buffer),
                        canvas.width, frame_flip, canvas.width, canvas.height,
                        wide_canvas.buffer, 4 * wide_canvas.width);
 
         double_vertically_and_flip(&framebuffer, &wide_canvas);
+
+        END_MONITORING(monitor, rendering);
 
         input::poll(input_system);
 
@@ -626,6 +751,8 @@ int main(int argc, char *argv[]) {
 
     // Unload all assets.
     audio::stop_stream(audio_system, test_music);
+    unload_atlas(&test_font_atlas);
+    bm_font_unload(&test_font);
     unload_atlas(&atlas);
     unload_pixmap(display, icccm_icon);
 
@@ -634,6 +761,7 @@ int main(int argc, char *argv[]) {
     input::shutdown(input_system);
 
     // Free and destroy any system resources.
+    monitor_destroy(monitor);
     DEALLOCATE(framebuffer.pixels);
     DEALLOCATE(wide_canvas.buffer);
     DEALLOCATE(canvas.buffer);

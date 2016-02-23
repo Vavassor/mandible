@@ -4,6 +4,7 @@
 #include "atomic.h"
 #include "logging.h"
 #include "wave_decoder.h"
+#include "string_utilities.h"
 
 #define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
@@ -35,29 +36,6 @@
 
 #define FOR_N(index, n) \
     for (auto (index) = 0; (index) < (n); ++(index))
-
-static void concatenate(char *to, const char *from, size_t to_size) {
-    assert(strlen(from) + strlen(to) <= to_size);
-    while (*(++to) && --to_size);
-    while ((*to++ = *from++) && --to_size);
-}
-
-static size_t copy_string(char *to, const char *from, size_t to_size) {
-    assert(strlen(to) <= to_size);
-    size_t i;
-    for (i = 0; i < to_size - 1; ++i) {
-        if (from[i] == '\0') {
-            break;
-        }
-        to[i] = from[i];
-    }
-    to[i] = '\0';
-    return i;
-}
-
-static bool strings_match(const char *a, const char *b) {
-    return std::strcmp(a, b) == 0;
-}
 
 namespace audio {
 
@@ -551,11 +529,22 @@ static bool open_device(const char *name, Specification *specification,
         specification->channels = channels;
     }
 
+    unsigned int resample = 1;
+    status = snd_pcm_hw_params_set_rate_resample(pcm_handle, hw_params, resample);
+    if (status < 0) {
+        LOG_ERROR("Failed to enable resampling. %s", snd_strerror(status));
+        return false;
+    }
+
     unsigned int rate = specification->sample_rate;
     status = snd_pcm_hw_params_set_rate_near(pcm_handle, hw_params, &rate,
                                              NULL);
     if (status < 0) {
         LOG_ERROR("Couldn't set the sample rate. %s", snd_strerror(status));
+        return false;
+    }
+    if (rate != specification->sample_rate) {
+        LOG_ERROR("Couldn't obtain the desired sample rate for the device.");
         return false;
     }
     specification->sample_rate = rate;

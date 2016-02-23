@@ -6,14 +6,18 @@ set (INCLUDES
     atomic.h
     audio.h
     evdev_text.h
+    font.h
     glx_extensions.h
     input.h
     logging.h
+    monitoring.h
     sized_types.h
     snes_ntsc.h
     snes_ntsc_config.h
     snes_ntsc_impl.h
     stb_image.h
+    string_utilities.h
+    unicode.h
     wave_decoder.h
 )
 source_group ("Header Files" FILES ${INCLUDES})
@@ -23,12 +27,16 @@ set (SOURCES
     atomic.c
     audio.cpp
     evdev_text.c
+    font.c
     glx_extensions.c
     input.cpp
     logging.cpp
+    monitoring.c
     main.cpp
     snes_ntsc.c
     stb_vorbis.c
+    string_utilities.c
+    unicode.c
     wave_decoder.c
 )
 source_group ("Source Files" FILES ${SOURCES})
