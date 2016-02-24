@@ -1,12 +1,14 @@
 #ifndef AUDIO_H_
 #define AUDIO_H_
 
+struct Monitor;
+
 namespace audio {
 
 typedef unsigned int StreamId;
 
 struct System;
-System *startup();
+System *startup(Monitor *monitor);
 void shutdown(System *system);
 void play_once(System *system, const char *filename, float volume);
 

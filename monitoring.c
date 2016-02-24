@@ -21,6 +21,13 @@ static int64_t timer_end(Timer *timer) {
     return duration;
 }
 
+static int64_t timer_get_resolution() {
+    struct timespec resolution;
+    clock_getres(CLOCK_MONOTONIC, &resolution);
+    int64_t nanoseconds = resolution.tv_nsec + resolution.tv_sec * 1e9;
+    return nanoseconds;
+}
+
 #define MAX_READINGS 64
 
 struct Monitor {
@@ -28,13 +35,19 @@ struct Monitor {
         const char *name;
         int64_t duration;
     } readings[MAX_READINGS];
+    char text_buffer[128];
     pthread_mutex_t mutex;
+    double clock_frequency;
     int total_readings;
 };
 
 Monitor *monitor_create() {
     Monitor *monitor = calloc(1, sizeof(Monitor));
     pthread_mutex_init(&monitor->mutex, NULL);
+
+    int64_t nanoseconds = timer_get_resolution();
+    monitor->clock_frequency = (double) nanoseconds / 1.0e6;
+
     return monitor;
 }
 
@@ -60,15 +73,24 @@ void monitor_end_period(Monitor *monitor, Timer *timer,
     pthread_mutex_unlock(&monitor->mutex);
 }
 
-void monitor_dump(Monitor *monitor) {
+void monitor_lock(Monitor *monitor) {
     pthread_mutex_lock(&monitor->mutex);
-#if 0
-    int i;
-    for (i = 0; i < monitor->total_readings; ++i) {
-        printf("%s: %lli\n", monitor->readings[i].name,
-               (long long) monitor->readings[i].duration);
-    }
-#endif
-    monitor->total_readings = 0;
+}
+
+void monitor_unlock(Monitor *monitor) {
     pthread_mutex_unlock(&monitor->mutex);
+}
+
+const char *monitor_pull_reading(Monitor *monitor) {
+    if (monitor->total_readings <= 0) {
+        return NULL;
+    }
+
+    int i = --monitor->total_readings;
+    double milliseconds = (double) monitor->readings[i].duration *
+                          monitor->clock_frequency;
+    sprintf(monitor->text_buffer, "%s: %f\n", monitor->readings[i].name,
+            milliseconds);
+
+    return monitor->text_buffer;
 }

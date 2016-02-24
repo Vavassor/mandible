@@ -5,6 +5,7 @@
 #include "logging.h"
 #include "wave_decoder.h"
 #include "string_utilities.h"
+#include "monitoring.h"
 
 #define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
@@ -588,8 +589,6 @@ static bool open_device(const char *name, Specification *specification,
 
     fill_remaining_specification(specification);
 
-    snd_pcm_nonblock(pcm_handle, 0);
-
     return true;
 }
 
@@ -858,6 +857,7 @@ struct System {
     snd_pcm_t *pcm_handle;
     float *mixed_samples;
     void *devicebound_samples;
+    Monitor *monitor;
     pthread_t thread;
     AtomicFlag quit;
     double time;
@@ -871,7 +871,7 @@ static void *run_mixer_thread(void *argument) {
     specification.channels = 2;
     specification.format = FORMAT_S16;
     specification.sample_rate = 44100;
-    specification.frames = 2048;
+    specification.frames = 1024;
     fill_remaining_specification(&specification);
     if (!open_device("default", &specification, &system->pcm_handle)) {
         LOG_ERROR("Failed to open audio device.");
@@ -898,6 +898,8 @@ static void *run_mixer_thread(void *argument) {
                      format_byte_count(system->conversion_info.out.format);
 
     while (atomic_flag_test_and_set(&system->quit)) {
+        BEGIN_MONITORING(system->monitor, audio);
+
         // Process any messages from the main thread.
         {
             Message message;
@@ -933,6 +935,11 @@ static void *run_mixer_thread(void *argument) {
         convert_format(system->mixed_samples, system->devicebound_samples,
                        system->specification.frames, &system->conversion_info);
 
+        int stream_ready = snd_pcm_wait(system->pcm_handle, 150);
+        if (!stream_ready) {
+            LOG_ERROR("ALSA device waiting timed out!");
+        }
+
         u8 *buffer = static_cast<u8 *>(system->devicebound_samples);
         snd_pcm_uframes_t frames_left = system->specification.frames;
         while (frames_left > 0) {
@@ -956,6 +963,8 @@ static void *run_mixer_thread(void *argument) {
         double delta_time = static_cast<double>(system->specification.frames) /
                             static_cast<double>(system->specification.sample_rate);
         system->time += delta_time;
+
+        END_MONITORING(system->monitor, audio);
     }
 
     close_all_streams(&system->stream_manager);
@@ -968,13 +977,15 @@ static void *run_mixer_thread(void *argument) {
     return NULL;
 }
 
-System *startup() {
+System *startup(Monitor *monitor) {
     System *system = ALLOCATE_STRUCT(System);
     if (!system) {
         LOG_ERROR("Failed to allocate memory for the audio system.");
         return NULL;
     }
     CLEAR_STRUCT(system);
+
+    system->monitor = monitor;
 
     atomic_flag_test_and_set(&system->quit);
     pthread_create(&system->thread, NULL, run_mixer_thread, system);

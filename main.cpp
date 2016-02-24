@@ -424,7 +424,7 @@ int main(int argc, char *argv[]) {
         "Icon.png",
     };
 
-    bool vertical_synchronization = false;
+    bool vertical_synchronization = true;
 
     Display *display; // the connection to the X server
     Colormap colormap;
@@ -440,13 +440,13 @@ int main(int argc, char *argv[]) {
     Pixmap icccm_icon;
     GLXContext rendering_context;
     snes_ntsc_t *ntsc_scaler;
+    Monitor *monitor;
     input::System *input_system;
     audio::System *audio_system;
     Clock clock;
     Canvas canvas;
     Canvas wide_canvas;
     Framebuffer framebuffer;
-    Monitor *monitor;
     Atlas atlas;
     BmFont test_font;
     Atlas test_font_atlas;
@@ -591,8 +591,9 @@ int main(int argc, char *argv[]) {
     snes_ntsc_init(ntsc_scaler, &snes_ntsc_composite);
 
     // Initialise any other resources needed before the main loop starts.
+    monitor = monitor_create();
     input_system = input::startup();
-    audio_system = audio::startup();
+    audio_system = audio::startup(monitor);
 
     initialise_clock(&clock);
 
@@ -604,8 +605,6 @@ int main(int argc, char *argv[]) {
     wide_canvas.height = canvas_height;
     wide_canvas.buffer = ALLOCATE_ARRAY(u8, 4 * wide_canvas.width * wide_canvas.height);
 
-    monitor = monitor_create();
-
     load_atlas(&atlas, "player.png");
     audio::start_stream(audio_system, "grass.ogg", 1.0f, &test_music);
 
@@ -615,7 +614,8 @@ int main(int argc, char *argv[]) {
     // Enable Vertical Synchronisation.
     if (!have_ext_swap_control) {
         glXSwapIntervalEXT(display, window, 1);
-        vertical_synchronization = true;
+    } else {
+        vertical_synchronization = false;
     }
 
     LOG_DEBUG("vertical synchronization: %s",
@@ -645,6 +645,10 @@ int main(int argc, char *argv[]) {
                      GL_UNSIGNED_INT_8_8_8_8_REV, framebuffer.pixels);
         glXSwapBuffers(display, window);
 
+        END_MONITORING(monitor, rendering);
+
+        BEGIN_MONITORING(monitor, drawing);
+
         // Then draw the next frame.
         canvas_fill(&canvas, 0x00ff00);
 
@@ -664,10 +668,19 @@ int main(int argc, char *argv[]) {
         }
 
         {
-            monitor_dump(monitor);
+#if 0
             draw_text(&canvas, &test_font_atlas, &test_font,
                       "Feet tread on the bones\n"
                       "nothing sees what we need.", 32, 32);
+#endif
+            monitor_lock(monitor);
+            int y = 0;
+            const char *text;
+            while ((text = monitor_pull_reading(monitor))) {
+                draw_text(&canvas, &test_font_atlas, &test_font, text, 0, y);
+                y += 14;
+            }
+            monitor_unlock(monitor);
         }
 
         frame_flip ^= 1;
@@ -677,7 +690,7 @@ int main(int argc, char *argv[]) {
 
         double_vertically_and_flip(&framebuffer, &wide_canvas);
 
-        END_MONITORING(monitor, rendering);
+        END_MONITORING(monitor, drawing);
 
         input::poll(input_system);
 

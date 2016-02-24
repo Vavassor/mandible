@@ -18,7 +18,10 @@ Monitor *monitor_create();
 void monitor_destroy(Monitor *monitor);
 void monitor_begin_period(Monitor *monitor, Timer *timer);
 void monitor_end_period(Monitor *monitor, Timer *timer, const char *period_name);
-void monitor_dump(Monitor *monitor);
+
+void monitor_lock(Monitor *monitor);
+void monitor_unlock(Monitor *monitor);
+const char *monitor_pull_reading(Monitor *monitor);
 
 #define BEGIN_MONITORING(monitor, period_name) \
     Timer timer_##period_name; \
