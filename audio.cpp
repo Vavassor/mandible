@@ -4,6 +4,8 @@
 #include "atomic.h"
 #include "logging.h"
 #include "wave_decoder.h"
+#include "string_utilities.h"
+#include "monitoring.h"
 
 #define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
@@ -15,6 +17,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+
+// General-Use Macros and Functions............................................
 
 #define ALLOCATE_STRUCT(type) \
     static_cast<type *>(std::malloc(sizeof(type)));
@@ -31,7 +35,12 @@
 #define DEALLOCATE_ARRAY(a) \
     std::free(a);
 
+#define FOR_N(index, n) \
+    for (auto (index) = 0; (index) < (n); ++(index))
+
 namespace audio {
+
+// Formatting Functions........................................................
 
 enum Format {
     FORMAT_U8,  // Unsigned 8-bit Integer
@@ -74,7 +83,7 @@ static std::size_t format_byte_count(Format format) {
 struct Int24 {
     s32 x;
 };
-typedef Int24 s24;
+typedef Int24 s24; // A 32-bit value pretending to be 24-bits
 
 // Converts numbers between numeric types.
 template <typename From, typename To>
@@ -332,204 +341,7 @@ static void generate_sine_samples(void *samples, int count, int channels,
     }
 }
 
-#if 0
-static pa_context *connect_context(pa_mainloop *mainloop, const char *name) {
-    pa_context *context;
-
-    pa_mainloop_api *mainloop_api = pa_mainloop_get_api(mainloop);
-    context = pa_context_new(mainloop_api, name);
-    if (!context) {
-        LOG_ERROR("Failed to create new context.");
-        return NULL;
-    }
-
-    int result = pa_context_connect(context, NULL, PA_CONTEXT_NOFLAGS, NULL);
-    if (result < 0) {
-        LOG_ERROR("Context did not connect: %s.", pa_strerror(result));
-        pa_context_unref(context);
-        return NULL;
-    }
-
-    // Wait until either the newly-connected context is ready or there is an
-    // error detected.
-
-    pa_context_state_t state;
-    do {
-        if (pa_mainloop_iterate(mainloop, 1, NULL) < 0) {
-            LOG_ERROR("Context did not connect: pa_mainloop_iterate failed.");
-            pa_context_unref(context);
-            return NULL;
-        }
-        state = pa_context_get_state(context);
-        if (!PA_CONTEXT_IS_GOOD(state)) {
-            LOG_ERROR("Context could not connect.");
-            pa_context_unref(context);
-            return NULL;
-        }
-    } while (state != PA_CONTEXT_READY);
-
-    return context;
-}
-
-static pa_stream *connect_stream(pa_mainloop *mainloop,
-                                 pa_context *context,
-                                 pa_buffer_attr *attributes,
-                                 pa_stream_flags_t flags,
-                                 pa_sample_spec *sample_spec,
-                                 pa_channel_map *channel_map) {
-    pa_stream *stream;
-
-    stream = pa_stream_new(context, "Playback", sample_spec, channel_map);
-    if (!stream) {
-        LOG_ERROR("Failed to create new stream. %s",
-                  pa_strerror(pa_context_errno(context)));
-        return NULL;
-    }
-
-    if (pa_stream_connect_playback(stream, NULL, attributes, flags, NULL,
-                                   NULL) < 0) {
-        LOG_ERROR("Failed to connect to newly-created stream. %s",
-                  pa_strerror(pa_context_errno(context)));
-        pa_stream_unref(stream);
-        return NULL;
-    }
-
-    pa_stream_state_t state;
-    do {
-        if (pa_mainloop_iterate(mainloop, 1, NULL) < 0) {
-            LOG_ERROR("Stream did not connect: pa_mainloop_iterate failed.");
-            pa_stream_unref(stream);
-            return NULL;
-        }
-        state = pa_stream_get_state(stream);
-        if (!PA_STREAM_IS_GOOD(state)) {
-            LOG_ERROR("Stream could not connect.");
-            pa_stream_unref(stream);
-            return NULL;
-        }
-    } while (state != PA_STREAM_READY);
-
-    return stream;
-}
-
-static bool open_pulseaudio(pa_mainloop **out_mainloop,
-                            pa_context **out_context,
-                            pa_stream **out_stream,
-                            u8 channels,
-                            pa_sample_format_t sample_format,
-                            u32 sample_rate) {
-
-    pa_mainloop *mainloop;
-    mainloop = pa_mainloop_new();
-    if (!mainloop) {
-        LOG_ERROR("Failed to create new mainloop.");
-        return false;
-    }
-
-    pa_context *context;
-    context = connect_context(mainloop, "mandible");
-    if (!context) {
-        pa_mainloop_free(mainloop);
-        return false;
-    }
-
-    pa_stream *stream;
-    pa_stream_flags_t flags = static_cast<pa_stream_flags_t>(
-                              PA_STREAM_FIX_FORMAT | PA_STREAM_FIX_RATE |
-                              PA_STREAM_FIX_CHANNELS);
-    pa_sample_spec spec;
-    spec.channels = channels;
-    spec.format = sample_format;
-    spec.rate = sample_rate;
-    stream = connect_stream(mainloop, context, NULL, flags, &spec, NULL);
-    if (!stream) {
-        pa_context_unref(context);
-        pa_mainloop_free(mainloop);
-        return false;
-    }
-
-    *out_mainloop = mainloop;
-    *out_context = context;
-    *out_stream = stream;
-    return true;
-}
-
-static void close_pulseaudio(pa_mainloop *mainloop, pa_context *context,
-                             pa_stream *stream) {
-    if (stream) {
-        pa_stream_disconnect(stream);
-        pa_stream_unref(stream);
-    }
-    if (context) {
-        pa_context_disconnect(context);
-        pa_context_unref(context);
-    }
-    if (mainloop) {
-        pa_mainloop_free(mainloop);
-    }
-}
-
-static void wait_for_stream_space(pa_mainloop *mainloop, pa_context *context,
-                                  pa_stream *stream, size_t desired_bytes) {
-    for (;;) {
-        if (pa_context_get_state(context) != PA_CONTEXT_READY ||
-            pa_stream_get_state(stream) != PA_STREAM_READY ||
-            pa_mainloop_iterate(mainloop, 1, NULL) < 0) {
-            return;
-        }
-        if (pa_stream_writable_size(stream) >= desired_bytes) {
-            return;
-        }
-    }
-}
-
-static void *run_mixer_thread(void *argument) {
-    System *system = static_cast<System *>(argument);
-
-    if (!open_pulseaudio(&system->mainloop, &system->context, &system->stream,
-                         system->channels, PA_SAMPLE_S16NE,
-                         system->sample_rate)) {
-        LOG_ERROR("PulseAudio initialization failed!");
-    }
-
-    size_t format_size = sample_format_size(system->devicebound_format);
-    size_t frame_size = format_size *  system->channels;
-    size_t update_size = system->mixed_sample_count * frame_size;
-
-    while (atomic_flag_test_and_set(&system->quit)) {
-        size_t amount_to_write = update_size;
-        while (amount_to_write > 0) {
-            size_t stream_buffer_size = amount_to_write;
-            void *stream_buffer;
-            pa_stream_begin_write(system->stream, &stream_buffer,
-                                  &stream_buffer_size);
-
-            int samples_to_mix = stream_buffer_size / frame_size;
-            generate_sine_samples(system->mixed_samples, samples_to_mix,
-                                  system->channels, system->sample_rate,
-                                  system->time, 70, 0.5f);
-
-            convert_format(system->mixed_samples, stream_buffer,
-                           samples_to_mix, &system->conversion_info);
-
-            pa_stream_write(system->stream, stream_buffer, stream_buffer_size,
-                            NULL, 0, PA_SEEK_RELATIVE);
-            amount_to_write -= stream_buffer_size;
-        }
-
-        wait_for_stream_space(system->mainloop, system->context,
-                              system->stream, update_size);
-
-        double delta_time = static_cast<double>(system->mixed_sample_count) /
-                            static_cast<double>(system->sample_rate);
-        system->time += delta_time;
-    }
-
-    close_pulseaudio(system->mainloop, system->context, system->stream);
-
-    return NULL;
-}
-#endif
+// Advanced Linux Sound Architecture device back-end...........................
 
 static int finalize_hw_params(snd_pcm_t *pcm_handle,
                               snd_pcm_hw_params_t *hw_params, bool override,
@@ -718,11 +530,22 @@ static bool open_device(const char *name, Specification *specification,
         specification->channels = channels;
     }
 
+    unsigned int resample = 1;
+    status = snd_pcm_hw_params_set_rate_resample(pcm_handle, hw_params, resample);
+    if (status < 0) {
+        LOG_ERROR("Failed to enable resampling. %s", snd_strerror(status));
+        return false;
+    }
+
     unsigned int rate = specification->sample_rate;
     status = snd_pcm_hw_params_set_rate_near(pcm_handle, hw_params, &rate,
                                              NULL);
     if (status < 0) {
         LOG_ERROR("Couldn't set the sample rate. %s", snd_strerror(status));
+        return false;
+    }
+    if (rate != specification->sample_rate) {
+        LOG_ERROR("Couldn't obtain the desired sample rate for the device.");
         return false;
     }
     specification->sample_rate = rate;
@@ -766,8 +589,6 @@ static bool open_device(const char *name, Specification *specification,
 
     fill_remaining_specification(specification);
 
-    snd_pcm_nonblock(pcm_handle, 0);
-
     return true;
 }
 
@@ -777,6 +598,10 @@ static void close_device(snd_pcm_t *pcm_handle) {
         snd_pcm_close(pcm_handle);
     }
 }
+
+// Stream functions............................................................
+//     for streaming audio from file sources, right now Vorbis from .ogg files
+//     and PCM and ADPCM inside .wav files
 
 struct Stream {
     enum DecoderType {
@@ -792,18 +617,24 @@ struct Stream {
             WaveDecoder *decoder;
         } wave;
     };
+    int channels;
     float *decoded_samples;
     float volume;
+    bool looping;
+    StreamId id;
 };
 
-#define FOR_N(index, n) \
-    for (auto (index) = 0; (index) < (n); ++(index))
+static Stream::DecoderType decoder_type_from_file_extension(const char *extension) {
+         if (strings_match(extension, "wav")) return Stream::DECODER_WAVE;
+    else if (strings_match(extension, "ogg")) return Stream::DECODER_VORBIS;
+    return Stream::DECODER_WAVE;
+}
 
 static void fill_with_silence(float *samples, u8 silence, u64 count) {
     std::memset(samples, silence, sizeof(float) * count);
 }
 
-#define MAX_STREAMS 2
+#define MAX_STREAMS 16
 
 struct StreamManager {
     Stream streams[MAX_STREAMS];
@@ -812,95 +643,125 @@ struct StreamManager {
 
 static void initialise_stream_manager(StreamManager *stream_manager) {
     std::memset(stream_manager, 0, sizeof *stream_manager);
-    FOR_N(i, MAX_STREAMS) {
-        Stream *stream = stream_manager->streams + i;
-        stream->vorbis.decoder = NULL;
-        stream->decoded_samples = NULL;
+}
+
+static int close_stream(StreamManager *manager, int stream_index) {
+    assert(stream_index >= 0 && stream_index < manager->stream_count);
+
+    Stream *stream = manager->streams + stream_index;
+    switch (stream->decoder_type) {
+        case Stream::DECODER_VORBIS: {
+            stb_vorbis_close(stream->vorbis.decoder);
+        } break;
+
+        case Stream::DECODER_WAVE: {
+            wave_close_file(stream->wave.decoder);
+        } break;
+    }
+    DEALLOCATE_ARRAY(stream->decoded_samples);
+
+    int last = manager->stream_count - 1;
+    if (manager->stream_count > 1 && stream_index != last) {
+        manager->streams[stream_index] = manager->streams[last];
+    }
+    manager->stream_count -= 1;
+
+    return stream_index - 1;
+}
+
+static void close_stream_by_id(StreamManager *manager, StreamId stream_id) {
+    FOR_N(i, manager->stream_count) {
+        Stream *stream = manager->streams + i;
+        if (stream->id == stream_id) {
+            i = close_stream(manager, i);
+        }
     }
 }
 
 static void close_all_streams(StreamManager *stream_manager) {
     FOR_N(i, stream_manager->stream_count) {
-        Stream *stream = stream_manager->streams + i;
-        switch (stream->decoder_type) {
-            case Stream::DECODER_VORBIS: {
-                stb_vorbis_close(stream->vorbis.decoder);
-            } break;
-
-            case Stream::DECODER_WAVE: {
-                wave_close_file(stream->wave.decoder);
-            } break;
-        }
-        DEALLOCATE_ARRAY(stream->decoded_samples);
+        close_stream(stream_manager, i);
     }
 }
 
 static void open_stream(StreamManager *stream_manager, const char *filename,
-                        Stream::DecoderType decoder_type,
-                        u64 samples_to_decode) {
+                        u64 samples_to_decode, float volume, bool looping,
+                        StreamId id = 0) {
     Stream *stream = stream_manager->streams + stream_manager->stream_count;
-    stream->decoder_type = decoder_type;
+
+    const char *file_extension = std::strstr(filename, ".") + 1;
+    stream->decoder_type = decoder_type_from_file_extension(file_extension);
+
+    char path[256];
+    copy_string(path, "Assets/", sizeof path);
+    concatenate(path, filename, sizeof path);
 
     switch (stream->decoder_type) {
         case Stream::DECODER_VORBIS: {
             stb_vorbis *decoder;
             int open_error = 0;
-            decoder = stb_vorbis_open_filename(filename, &open_error, NULL);
+            decoder = stb_vorbis_open_filename(path, &open_error, NULL);
             if (!decoder || open_error) {
-                LOG_ERROR("Vorbis file %s failed to load: %i", filename,
+                LOG_ERROR("Vorbis file %s failed to load: %i", path,
                           open_error);
             }
             stream->vorbis.decoder = decoder;
+
+            stb_vorbis_info info = stb_vorbis_get_info(stream->vorbis.decoder);
+            stream->channels = info.channels;
         } break;
 
         case Stream::DECODER_WAVE: {
             WaveDecoder *decoder;
-            decoder = wave_open_file(filename);
+            decoder = wave_open_file(path);
             if (!decoder) {
-                LOG_ERROR("Wave file %s failed to load.", filename);
+                LOG_ERROR("Wave file %s failed to load.", path);
             }
             stream->wave.decoder = decoder;
+            stream->channels = wave_channels(decoder);
         } break;
     }
 
     stream->decoded_samples = ALLOCATE_ARRAY(float, samples_to_decode);
-    stream->volume = 1.0f;
-    ++stream_manager->stream_count;
+    stream->volume = volume;
+    stream->looping = looping;
+    stream->id = id;
+    stream_manager->stream_count += 1;
 }
 
-static void decode_streams(StreamManager *stream_manager, int frames,
-                           int channels) {
-    int samples_to_decode = channels * frames;
+static void decode_streams(StreamManager *stream_manager, int frames) {
     FOR_N(i, stream_manager->stream_count) {
         Stream *stream = stream_manager->streams + i;
+        int channels = stream->channels;
+        int samples_to_decode = channels * frames;
         switch (stream->decoder_type) {
             case Stream::DECODER_VORBIS: {
-                int frames_decoded =
-                        stb_vorbis_get_samples_float_interleaved(stream->vorbis.decoder,
-                                                                 channels,
-                                                                 stream->decoded_samples,
-                                                                 samples_to_decode);
+                int frames_decoded = stb_vorbis_get_samples_float_interleaved(stream->vorbis.decoder, channels, stream->decoded_samples, samples_to_decode);
                 if (frames_decoded < frames) {
-                    samples_to_decode -= frames_decoded * channels;
-                    stb_vorbis_seek_start(stream->vorbis.decoder);
-                    stb_vorbis_get_samples_float_interleaved(stream->vorbis.decoder,
-                                                             channels,
-                                                             stream->decoded_samples,
-                                                             samples_to_decode);
+                    if (stream->looping) {
+                        samples_to_decode -= frames_decoded * channels;
+                        stb_vorbis_seek_start(stream->vorbis.decoder);
+                        stb_vorbis_get_samples_float_interleaved(stream->vorbis.decoder, channels, stream->decoded_samples, samples_to_decode);
+                    } else {
+                        int samples_needed = (frames - frames_decoded) * channels;
+                        fill_with_silence(stream->decoded_samples, 0, samples_needed);
+                        i = close_stream(stream_manager, i);
+                    }
                 }
             } break;
 
             case Stream::DECODER_WAVE: {
-                int frames_decoded = wave_decode_interleaved(stream->wave.decoder,
-                                                             channels,
-                                                             stream->decoded_samples,
-                                                             samples_to_decode);
+                int frames_decoded = wave_decode_interleaved(stream->wave.decoder, channels, stream->decoded_samples, samples_to_decode);
                 if (frames_decoded < frames) {
-                    samples_to_decode -= frames_decoded * channels;
-                    wave_seek_start(stream->wave.decoder);
-                    wave_decode_interleaved(stream->wave.decoder, channels,
-                                            stream->decoded_samples,
-                                            samples_to_decode);
+                    if (stream->looping) {
+                        samples_to_decode -= frames_decoded * channels;
+                        wave_seek_start(stream->wave.decoder);
+                        wave_decode_interleaved(stream->wave.decoder, channels, stream->decoded_samples, samples_to_decode);
+                    } else {
+                        int samples_needed = (frames - frames_decoded) * channels;
+                        fill_with_silence(stream->decoded_samples, 0, samples_needed);
+                        i = close_stream(stream_manager, i);
+                    }
                 }
             } break;
         }
@@ -912,12 +773,30 @@ static float clamp(float x, float min, float max) {
 }
 
 static void mix_streams(StreamManager *stream_manager, float *mix_buffer,
-                        int samples) {
+                        int frames, int channels) {
+    int samples = frames * channels;
+
     // Mix the streams' samples into the given buffer.
     FOR_N(i, stream_manager->stream_count) {
         Stream *stream = stream_manager->streams + i;
-        FOR_N(j, samples) {
-            mix_buffer[j] += stream->volume * stream->decoded_samples[j];
+        if (channels < stream->channels) {
+            FOR_N(j, frames) {
+                FOR_N(k, channels) {
+                    mix_buffer[j*channels+k] += stream->volume * stream->decoded_samples[j*stream->channels];
+                }
+            }
+        } else if (channels > stream->channels) {
+            assert(stream->channels == 1); // @Incomplete: This path doesn't actually handle stereo-to-surround mixing
+            FOR_N(j, frames) {
+                float sample = stream->volume * stream->decoded_samples[j*stream->channels];
+                FOR_N(k, channels) {
+                    mix_buffer[j*channels+k] += sample;
+                }
+            }
+        } else {
+            FOR_N(j, samples) {
+                mix_buffer[j] += stream->volume * stream->decoded_samples[j];
+            }
         }
     }
 
@@ -927,8 +806,76 @@ static void mix_streams(StreamManager *stream_manager, float *mix_buffer,
     }
 }
 
+// Message Queue...............................................................
+
+struct Message {
+    enum Code {
+        PLAY_ONCE,
+        START_STREAM,
+        STOP_STREAM,
+    } code;
+    union {
+        struct {
+            char filename[128];
+            float volume;
+        } play_once;
+
+        struct {
+            char filename[128];
+            StreamId stream_id;
+            float volume;
+        } start_stream;
+
+        struct {
+            StreamId stream_id;
+        } stop_stream;
+    };
+};
+
+#define MAX_MESSAGES 32
+
+struct MessageQueue {
+    Message messages[MAX_MESSAGES];
+    AtomicInt head;
+    AtomicInt tail;
+};
+
+static bool was_empty(MessageQueue *queue) {
+    return atomic_int_load(&queue->head) == atomic_int_load(&queue->tail);
+}
+
+static bool was_full(MessageQueue *queue) {
+    int next_tail = atomic_int_load(&queue->tail);
+    next_tail = (next_tail + 1) % MAX_MESSAGES;
+    return next_tail == atomic_int_load(&queue->head);
+}
+
+static bool enqueue_message(MessageQueue *queue, Message *message) {
+    int current_tail = atomic_int_load(&queue->tail);
+    int next_tail = (current_tail + 1) % MAX_MESSAGES;
+    if (next_tail != atomic_int_load(&queue->head)) {
+        queue->messages[current_tail] = *message;
+        atomic_int_store(&queue->tail, next_tail);
+        return true;
+    }
+    return false;
+}
+
+static bool dequeue_message(MessageQueue *queue, Message *message) {
+    int current_head = atomic_int_load(&queue->head);
+    if (current_head == atomic_int_load(&queue->tail)) {
+        return false;
+    }
+    *message = queue->messages[current_head];
+    atomic_int_store(&queue->head, (current_head + 1) % MAX_MESSAGES);
+    return true;
+}
+
+// System Functions............................................................
+
 struct System {
     StreamManager stream_manager;
+    MessageQueue message_queue;
     ConversionInfo conversion_info;
     Specification specification;
     snd_pcm_t *pcm_handle;
@@ -937,6 +884,7 @@ struct System {
     pthread_t thread;
     AtomicFlag quit;
     double time;
+    StreamId stream_id_seed;
 };
 
 static void *run_mixer_thread(void *argument) {
@@ -946,7 +894,7 @@ static void *run_mixer_thread(void *argument) {
     specification.channels = 2;
     specification.format = FORMAT_S16;
     specification.sample_rate = 44100;
-    specification.frames = 2048;
+    specification.frames = 1024;
     fill_remaining_specification(&specification);
     if (!open_device("default", &specification, &system->pcm_handle)) {
         LOG_ERROR("Failed to open audio device.");
@@ -956,13 +904,9 @@ static void *run_mixer_thread(void *argument) {
     std::size_t samples = specification.channels * specification.frames;
 
     // Setup streams.
-
     initialise_stream_manager(&system->stream_manager);
-    open_stream(&system->stream_manager, "Assets/grass_adpcm.wav",
-                Stream::DECODER_WAVE, samples);
 
     // Setup mixing.
-
     system->mixed_samples = ALLOCATE_ARRAY(float, samples);
     system->devicebound_samples = ALLOCATE_ARRAY(u8, specification.size);
     fill_with_silence(system->mixed_samples, specification.silence, samples);
@@ -977,20 +921,55 @@ static void *run_mixer_thread(void *argument) {
                      format_byte_count(system->conversion_info.out.format);
 
     while (atomic_flag_test_and_set(&system->quit)) {
-        decode_streams(&system->stream_manager, system->specification.frames,
-                       system->specification.channels);
+        BEGIN_MONITORING(audio);
+
+        // Process any messages from the main thread.
+        {
+            Message message;
+            while (dequeue_message(&system->message_queue, &message)) {
+                switch (message.code) {
+                    case Message::PLAY_ONCE: {
+                        open_stream(&system->stream_manager,
+                                    message.play_once.filename, samples,
+                                    message.play_once.volume, false);
+                    } break;
+
+                    case Message::START_STREAM: {
+                        open_stream(&system->stream_manager,
+                                    message.start_stream.filename, samples,
+                                    message.start_stream.volume, true,
+                                    message.start_stream.stream_id);
+                    } break;
+
+                    case Message::STOP_STREAM: {
+                        close_stream_by_id(&system->stream_manager,
+                                           message.stop_stream.stream_id);
+                    } break;
+                }
+            }
+        }
+
+        decode_streams(&system->stream_manager, system->specification.frames);
 
         fill_with_silence(system->mixed_samples, specification.silence, samples);
-        mix_streams(&system->stream_manager, system->mixed_samples, samples);
+        mix_streams(&system->stream_manager, system->mixed_samples,
+                    system->specification.frames, system->specification.channels);
 
         convert_format(system->mixed_samples, system->devicebound_samples,
                        system->specification.frames, &system->conversion_info);
 
+        int stream_ready = snd_pcm_wait(system->pcm_handle, 150);
+        if (!stream_ready) {
+            LOG_ERROR("ALSA device waiting timed out!");
+        }
+
         u8 *buffer = static_cast<u8 *>(system->devicebound_samples);
         snd_pcm_uframes_t frames_left = system->specification.frames;
         while (frames_left > 0) {
-            int status = snd_pcm_writei(system->pcm_handle, buffer, frames_left);
-            if (status < 0) {
+            int frames_written = snd_pcm_writei(system->pcm_handle, buffer,
+                                                frames_left);
+            if (frames_written < 0) {
+                int status = frames_written;
                 if (status == -EAGAIN) {
                     continue;
                 }
@@ -1000,13 +979,15 @@ static void *run_mixer_thread(void *argument) {
                 }
                 continue;
             }
-            buffer += status * frame_size;
-            frames_left -= status;
+            buffer += frames_written * frame_size;
+            frames_left -= frames_written;
         }
 
         double delta_time = static_cast<double>(system->specification.frames) /
                             static_cast<double>(system->specification.sample_rate);
         system->time += delta_time;
+
+        END_MONITORING(audio);
     }
 
     close_all_streams(&system->stream_manager);
@@ -1023,6 +1004,7 @@ System *startup() {
     System *system = ALLOCATE_STRUCT(System);
     if (!system) {
         LOG_ERROR("Failed to allocate memory for the audio system.");
+        return NULL;
     }
     CLEAR_STRUCT(system);
 
@@ -1039,6 +1021,47 @@ void shutdown(System *system) {
 
     // Destroy the system.
     DEALLOCATE_STRUCT(system);
+}
+
+void play_once(System *system, const char *filename, float volume) {
+    Message message;
+    message.code = Message::PLAY_ONCE;
+    copy_string(message.play_once.filename, filename,
+                sizeof message.play_once.filename);
+    message.play_once.volume = volume;
+    enqueue_message(&system->message_queue, &message);
+}
+
+static StreamId generate_stream_id(System *system) {
+    system->stream_id_seed += 1;
+    if (system->stream_id_seed == 0) {
+        // Reserve stream ids of 0 for streams that don't need to be
+        // identified or referred to outside of the audio system.
+        system->stream_id_seed = 1;
+    }
+    return system->stream_id_seed;
+}
+
+void start_stream(System *system, const char *filename, float volume,
+                  StreamId *out_stream_id) {
+    StreamId stream_id = generate_stream_id(system);
+
+    Message message;
+    message.code = Message::START_STREAM;
+    copy_string(message.start_stream.filename, filename,
+                sizeof message.start_stream.filename);
+    message.start_stream.stream_id = stream_id;
+    message.start_stream.volume = volume;
+    enqueue_message(&system->message_queue, &message);
+
+    *out_stream_id = stream_id;
+}
+
+void stop_stream(System *system, StreamId stream_id) {
+    Message message;
+    message.code = Message::STOP_STREAM;
+    message.stop_stream.stream_id = stream_id;
+    enqueue_message(&system->message_queue, &message);
 }
 
 } // namespace audio

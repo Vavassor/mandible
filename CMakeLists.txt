@@ -6,28 +6,38 @@ set (INCLUDES
     atomic.h
     audio.h
     evdev_text.h
+    font.h
+    glx_extensions.h
     input.h
     logging.h
+    monitoring.h
     sized_types.h
     snes_ntsc.h
     snes_ntsc_config.h
     snes_ntsc_impl.h
     stb_image.h
+    string_utilities.h
+    unicode.h
     wave_decoder.h
 )
 source_group ("Header Files" FILES ${INCLUDES})
 
 # ----- SOURCE FILES -----
 set (SOURCES
-    atomic.c
+    atomic.cpp
     audio.cpp
-    evdev_text.c
+    evdev_text.cpp
+    font.cpp
+    glx_extensions.cpp
     input.cpp
     logging.cpp
+    monitoring.cpp
     main.cpp
     snes_ntsc.c
     stb_vorbis.c
-    wave_decoder.c
+    string_utilities.cpp
+    unicode.cpp
+    wave_decoder.cpp
 )
 source_group ("Source Files" FILES ${SOURCES})
 
@@ -53,10 +63,8 @@ set_target_properties (mandible PROPERTIES COMPILE_DEFINITIONS_MINSIZEREL ${RELE
 
 # ----- LIBRARIES -----
 set (LIBRARIES
-    xcb
-    xcb-icccm
-    xcb-keysyms
-    xcb-shm
+    X11
+    GL
     udev
     pthread
     asound
