@@ -1,19 +1,11 @@
 #ifndef STRING_UTILITIES_H_
 #define STRING_UTILITIES_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include <cstddef>
 
-#include <stddef.h>
-#include <stdbool.h>
-
-void concatenate(char *to, const char *from, size_t to_size);
-size_t copy_string(char *to, const char *from, size_t to_size);
+void concatenate(char *to, const char *from, std::size_t to_size);
+std::size_t copy_string(char *to, const char *from, std::size_t to_size);
+std::size_t string_size(const char *str);
 bool strings_match(const char *a, const char *b);
-
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
 
 #endif /* STRING_UTILITIES_H_ */

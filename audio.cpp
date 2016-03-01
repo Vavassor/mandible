@@ -617,6 +617,7 @@ struct Stream {
             WaveDecoder *decoder;
         } wave;
     };
+    int channels;
     float *decoded_samples;
     float volume;
     bool looping;
@@ -705,6 +706,9 @@ static void open_stream(StreamManager *stream_manager, const char *filename,
                           open_error);
             }
             stream->vorbis.decoder = decoder;
+
+            stb_vorbis_info info = stb_vorbis_get_info(stream->vorbis.decoder);
+            stream->channels = info.channels;
         } break;
 
         case Stream::DECODER_WAVE: {
@@ -714,6 +718,7 @@ static void open_stream(StreamManager *stream_manager, const char *filename,
                 LOG_ERROR("Wave file %s failed to load.", path);
             }
             stream->wave.decoder = decoder;
+            stream->channels = wave_channels(decoder);
         } break;
     }
 
@@ -724,10 +729,11 @@ static void open_stream(StreamManager *stream_manager, const char *filename,
     stream_manager->stream_count += 1;
 }
 
-static void decode_streams(StreamManager *stream_manager, int frames, int channels) {
-    int samples_to_decode = channels * frames;
+static void decode_streams(StreamManager *stream_manager, int frames) {
     FOR_N(i, stream_manager->stream_count) {
         Stream *stream = stream_manager->streams + i;
+        int channels = stream->channels;
+        int samples_to_decode = channels * frames;
         switch (stream->decoder_type) {
             case Stream::DECODER_VORBIS: {
                 int frames_decoded = stb_vorbis_get_samples_float_interleaved(stream->vorbis.decoder, channels, stream->decoded_samples, samples_to_decode);
@@ -767,12 +773,30 @@ static float clamp(float x, float min, float max) {
 }
 
 static void mix_streams(StreamManager *stream_manager, float *mix_buffer,
-                        int samples) {
+                        int frames, int channels) {
+    int samples = frames * channels;
+
     // Mix the streams' samples into the given buffer.
     FOR_N(i, stream_manager->stream_count) {
         Stream *stream = stream_manager->streams + i;
-        FOR_N(j, samples) {
-            mix_buffer[j] += stream->volume * stream->decoded_samples[j];
+        if (channels < stream->channels) {
+            FOR_N(j, frames) {
+                FOR_N(k, channels) {
+                    mix_buffer[j*channels+k] += stream->volume * stream->decoded_samples[j*stream->channels];
+                }
+            }
+        } else if (channels > stream->channels) {
+            assert(stream->channels == 1); // @Incomplete: This path doesn't actually handle stereo-to-surround mixing
+            FOR_N(j, frames) {
+                float sample = stream->volume * stream->decoded_samples[j*stream->channels];
+                FOR_N(k, channels) {
+                    mix_buffer[j*channels+k] += sample;
+                }
+            }
+        } else {
+            FOR_N(j, samples) {
+                mix_buffer[j] += stream->volume * stream->decoded_samples[j];
+            }
         }
     }
 
@@ -857,7 +881,6 @@ struct System {
     snd_pcm_t *pcm_handle;
     float *mixed_samples;
     void *devicebound_samples;
-    Monitor *monitor;
     pthread_t thread;
     AtomicFlag quit;
     double time;
@@ -898,7 +921,7 @@ static void *run_mixer_thread(void *argument) {
                      format_byte_count(system->conversion_info.out.format);
 
     while (atomic_flag_test_and_set(&system->quit)) {
-        BEGIN_MONITORING(system->monitor, audio);
+        BEGIN_MONITORING(audio);
 
         // Process any messages from the main thread.
         {
@@ -926,11 +949,11 @@ static void *run_mixer_thread(void *argument) {
             }
         }
 
-        decode_streams(&system->stream_manager, system->specification.frames,
-                       system->specification.channels);
+        decode_streams(&system->stream_manager, system->specification.frames);
 
         fill_with_silence(system->mixed_samples, specification.silence, samples);
-        mix_streams(&system->stream_manager, system->mixed_samples, samples);
+        mix_streams(&system->stream_manager, system->mixed_samples,
+                    system->specification.frames, system->specification.channels);
 
         convert_format(system->mixed_samples, system->devicebound_samples,
                        system->specification.frames, &system->conversion_info);
@@ -964,7 +987,7 @@ static void *run_mixer_thread(void *argument) {
                             static_cast<double>(system->specification.sample_rate);
         system->time += delta_time;
 
-        END_MONITORING(system->monitor, audio);
+        END_MONITORING(audio);
     }
 
     close_all_streams(&system->stream_manager);
@@ -977,15 +1000,13 @@ static void *run_mixer_thread(void *argument) {
     return NULL;
 }
 
-System *startup(Monitor *monitor) {
+System *startup() {
     System *system = ALLOCATE_STRUCT(System);
     if (!system) {
         LOG_ERROR("Failed to allocate memory for the audio system.");
         return NULL;
     }
     CLEAR_STRUCT(system);
-
-    system->monitor = monitor;
 
     atomic_flag_test_and_set(&system->quit);
     pthread_create(&system->thread, NULL, run_mixer_thread, system);

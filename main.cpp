@@ -20,7 +20,6 @@
 #include <time.h>
 
 #include <cstdlib>
-#include <cstring>
 #include <cmath>
 
 #if defined(__GNUC__)
@@ -71,7 +70,8 @@ struct Image {
 };
 
 static void load_image(Image *image, const char *name) {
-    image->data = stbi_load(name, &image->width, &image->height, &image->bytes_per_pixel, 0);
+    image->data = stbi_load(name, &image->width, &image->height,
+                            &image->bytes_per_pixel, 0);
 }
 
 static void unload_image(Image *image) {
@@ -81,19 +81,46 @@ static void unload_image(Image *image) {
 // Canvas Functions............................................................
 
 struct Canvas {
-    u8 *buffer;
+    u16 *buffer;
     int width;
     int height;
 };
 
+static bool canvas_create(Canvas *canvas, int width, int height) {
+    canvas->width = width;
+    canvas->height = height;
+    canvas->buffer = ALLOCATE_ARRAY(u16, width * height);
+    return canvas->buffer;
+}
+
+static void canvas_destroy(Canvas *canvas) {
+    if (canvas->buffer) {
+        DEALLOCATE(canvas->buffer);
+    }
+}
+
+#define PACK16(x)        \
+    (((x) >> 3 & 0x1F) | \
+    ((x) >> 6 & 0x3E0) | \
+    ((x) >> 9 & 0x7C00))
+
+// @Incomplete: untested
+#define UNPACK16(x)        \
+    ((((x) & 0x1F) << 3) | \
+    (((x) & 0x3E0) << 6) | \
+    (((x) & 0x7C00) << 9))
+
+static inline void set_pixel(Canvas *canvas, int x, int y, u16 value) {
+    assert(x >= 0 && x < canvas->width);
+    assert(y >= 0 && y < canvas->height);
+    canvas->buffer[y * canvas->width + x] = value;
+}
+
 static void canvas_fill(Canvas *canvas, u32 colour) {
     int pixel_count = canvas->width * canvas->height;
-    u16 *buffer = reinterpret_cast<u16 *>(canvas->buffer);
-    u16 colour16 = (colour >> 3 & 0x1F) |
-                   (colour >> 6 & 0x3E0) |
-                   (colour >> 9 & 0x7C00);
+    u16 colour16 = PACK16(colour);
     for (int i = 0; i < pixel_count; ++i) {
-        buffer[i] = colour16;
+        canvas->buffer[i] = colour16;
     }
 }
 
@@ -133,13 +160,112 @@ static void draw_rectangle(Canvas *canvas, Atlas *atlas, int cx, int cy,
         for (int x = 0; x < width; ++x) {
             int atlas_x = mod(tx + x, atlas->width);
             int atlas_y = mod(ty + y, atlas->height);
-            int ai = (atlas_y * atlas->width + atlas_x) * 4;
-            int ci = ((cy + y) * canvas->width + (cx + x)) * 2; // * 4
-            if (atlas->data[ai+3]) {
-                u16 *buffer = reinterpret_cast<u16 *>(canvas->buffer + ci);
-                *buffer = (static_cast<u16>(atlas->data[ai+0]) >> 3 & 0x1F)
-                        | (static_cast<u16>(atlas->data[ai+1]) << 2 & 0x3E0)
-                        | (static_cast<u16>(atlas->data[ai+2]) << 7 & 0x7C00);
+            int ai = atlas_y * atlas->width + atlas_x;
+            u32 c = reinterpret_cast<u32 *>(atlas->data)[ai];
+            if (c & 0xFF000000) {
+                set_pixel(canvas, cx + x, cy + y, PACK16(c));
+            }
+        }
+    }
+}
+
+static int clip_test(int q, int p, double *te, double *tl) {
+    if (p == 0) {
+        return q < 0;
+    }
+    double t = static_cast<double>(q) / p;
+    if (p > 0) {
+        if (t > *tl) {
+            return 0;
+        }
+        if (t > *te) {
+            *te = t;
+        }
+    } else {
+        if (t < *te) {
+            return 0;
+        }
+        if (t < *tl) {
+            *tl = t;
+        }
+    }
+    return 1;
+}
+
+static int sign(int x) {
+    return (x > 0) - (x < 0);
+}
+
+static void draw_line(Canvas *canvas, int x1, int y1, int x2, int y2,
+                      u32 colour) {
+
+    // Clip the line to the canvas rectangle.
+    // Uses the Liang–Barsky line clipping algorithm.
+    {
+        // the rectangle's boundaries
+        int x_min = 0;
+        int x_max = canvas->width - 1;
+        int y_min = 0;
+        int y_max = canvas->height - 1;
+
+        // for the line segment (x1, y1) to (x2, y2), derive the parametric form
+        // of its line:
+        // x = x1 + t * (x2 - x1)
+        // y = y1 + t * (y2 - y1)
+
+        int dx = x2 - x1;
+        int dy = y2 - y1;
+
+        double te = 0.0; // entering
+        double tl = 1.0; // leaving
+        if (clip_test(x_min - x1,  dx, &te, &tl) &&
+            clip_test(x1 - x_max, -dx, &te, &tl) &&
+            clip_test(y_min - y1,  dy, &te, &tl) &&
+            clip_test(y1 - y_max, -dy, &te, &tl)) {
+            if (tl < 1.0) {
+                x2 = static_cast<int>(static_cast<double>(x1) + tl * dx);
+                y2 = static_cast<int>(static_cast<double>(y1) + tl * dy);
+            }
+            if (te > 0.0) {
+                x1 += te * dx;
+                y1 += te * dy;
+            }
+        }
+    }
+
+    // Draw the clipped line segment to the canvas.
+    {
+        u16 colour16 = PACK16(colour);
+        int adx = std::abs(x2 - x1);  // absolute value of delta x
+        int ady = std::abs(y2 - y1);  // absolute value of delta y
+        int sdx = sign(x2 - x1); // sign of delta x
+        int sdy = sign(y2 - y1); // sign of delta y
+        int x = adx / 2;
+        int y = ady / 2;
+        int px = x1;             // plot x
+        int py = y1;             // plot y
+
+        set_pixel(canvas, px, py, colour16);
+
+        if (adx >= ady) {
+            for (int i = 0; i < adx; ++i) {
+                y += ady;
+                if (y >= adx) {
+                    y -= adx;
+                    py += sdy;
+                }
+                px += sdx;
+                set_pixel(canvas, px, py, colour16);
+            }
+        } else {
+            for (int i = 0; i < ady; ++i) {
+                x += adx;
+                if (x >= ady) {
+                    x -= ady;
+                    px += sdx;
+                }
+                py += sdy;
+                set_pixel(canvas, px, py, colour16);
             }
         }
     }
@@ -223,7 +349,7 @@ static bool is_line_break(char32_t codepoint) {
 static void draw_text(Canvas *canvas, Atlas *atlas, BmFont *font,
                       const char *text, int cx, int cy) {
 
-    int char_count = std::strlen(text);
+    int char_count = string_size(text);
     int codepoint_count = utf8_codepoint_count(text);
     char32_t* codepoints = STACK_ALLOCATE_ARRAY(codepoint_count, char32_t);
     utf8_to_utf32(text, char_count, codepoints, codepoint_count);
@@ -235,7 +361,7 @@ static void draw_text(Canvas *canvas, Atlas *atlas, BmFont *font,
     char32_t prior_char = 0x0;
     for (int i = 0; i < char_count; ++i) {
         char32_t c = text[i];
-        FontGlyph *glyph = bm_font_get_character_mapping(font, c);
+        BmFont::Glyph *glyph = bm_font_get_character_mapping(font, c);
 
         if (is_line_break(c)) {
             pen.x = cx;
@@ -264,21 +390,34 @@ static void draw_text(Canvas *canvas, Atlas *atlas, BmFont *font,
 // Framebuffer Functions.......................................................
 
 struct Framebuffer {
-    u8 *pixels;
+    u32 *pixels;
     int width;
     int height;
 };
 
-static void double_vertically_and_flip(Framebuffer *to, Canvas *from) {
+static bool framebuffer_create(Framebuffer *framebuffer,
+                               int width, int height) {
+    framebuffer->width = width;
+    framebuffer->height = height;
+    framebuffer->pixels = ALLOCATE_ARRAY(u32, width * height);
+    return framebuffer->pixels;
+}
+
+static void framebuffer_destroy(Framebuffer *framebuffer) {
+    if (framebuffer->pixels) {
+        DEALLOCATE(framebuffer->pixels);
+    }
+}
+
+static void double_vertically_and_flip(Framebuffer *RESTRICT to,
+                                       Framebuffer *RESTRICT from) {
     int w = from->width;
     int h = 2 * from->height;
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
-            int ti = 4 * ((h - y) * to->width + x);
-            int fi = 4 * ((y / 2) * from->width + x);
-            for (int i = 0; i < 4; ++i) {
-                to->pixels[ti+i] = from->buffer[fi+i];
-            }
+            int ti = (h - y) * to->width + x;
+            int fi = (y / 2) * from->width + x;
+            to->pixels[ti] = from->pixels[fi];
         }
     }
 }
@@ -425,6 +564,7 @@ int main(int argc, char *argv[]) {
     };
 
     bool vertical_synchronization = true;
+    bool show_monitoring_overlay = false;
 
     Display *display; // the connection to the X server
     Colormap colormap;
@@ -440,12 +580,11 @@ int main(int argc, char *argv[]) {
     Pixmap icccm_icon;
     GLXContext rendering_context;
     snes_ntsc_t *ntsc_scaler;
-    Monitor *monitor;
     input::System *input_system;
     audio::System *audio_system;
     Clock clock;
     Canvas canvas;
-    Canvas wide_canvas;
+    Framebuffer wide_framebuffer;
     Framebuffer framebuffer;
     Atlas atlas;
     BmFont test_font;
@@ -525,11 +664,11 @@ int main(int argc, char *argv[]) {
     XChangeProperty(display, window, net_wm_name, atom_utf8_string, 8,
                     PropModeReplace,
                     reinterpret_cast<const unsigned char*>(title),
-                    std::strlen(title));
+                    string_size(title));
     XChangeProperty(display, window, net_wm_icon_name, atom_utf8_string,
                     8, PropModeReplace,
                     reinterpret_cast<const unsigned char*>(title),
-                    std::strlen(title));
+                    string_size(title));
 
     // Set the window icons.
 
@@ -581,9 +720,8 @@ int main(int argc, char *argv[]) {
     load_glx_extensions(display, DefaultScreen(display));
 
     // Initialise the framebuffer.
-    framebuffer.width = scaled_width;
-    framebuffer.height = scaled_height;
-    framebuffer.pixels = ALLOCATE_ARRAY(u8, 4 * framebuffer.width * framebuffer.height);
+    framebuffer_create(&framebuffer, scaled_width, scaled_height);
+    framebuffer_create(&wide_framebuffer, scaled_width, canvas_height);
 
     // Create the scaler used to up-scale the canvas and simulate NTSC cable
     // colour-bleeding/artifacts.
@@ -591,19 +729,13 @@ int main(int argc, char *argv[]) {
     snes_ntsc_init(ntsc_scaler, &snes_ntsc_composite);
 
     // Initialise any other resources needed before the main loop starts.
-    monitor = monitor_create();
+    monitoring::startup();
     input_system = input::startup();
-    audio_system = audio::startup(monitor);
+    audio_system = audio::startup();
 
     initialise_clock(&clock);
 
-    canvas.width = canvas_width;
-    canvas.height = canvas_height;
-    canvas.buffer = ALLOCATE_ARRAY(u8, 2 * canvas.width * canvas.height);
-
-    wide_canvas.width = scaled_width;
-    wide_canvas.height = canvas_height;
-    wide_canvas.buffer = ALLOCATE_ARRAY(u8, 4 * wide_canvas.width * wide_canvas.height);
+    canvas_create(&canvas, canvas_width, canvas_height);
 
     load_atlas(&atlas, "player.png");
     audio::start_stream(audio_system, "grass.ogg", 1.0f, &test_music);
@@ -637,7 +769,7 @@ int main(int argc, char *argv[]) {
         // Record when the frame starts.
         double frame_start_time = get_time(&clock);
 
-        BEGIN_MONITORING(monitor, rendering);
+        BEGIN_MONITORING(rendering);
 
         // Push the last frame as soon as possible.
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -645,9 +777,9 @@ int main(int argc, char *argv[]) {
                      GL_UNSIGNED_INT_8_8_8_8_REV, framebuffer.pixels);
         glXSwapBuffers(display, window);
 
-        END_MONITORING(monitor, rendering);
+        END_MONITORING(rendering);
 
-        BEGIN_MONITORING(monitor, drawing);
+        BEGIN_MONITORING(drawing);
 
         // Then draw the next frame.
         canvas_fill(&canvas, 0x00ff00);
@@ -665,38 +797,37 @@ int main(int argc, char *argv[]) {
                 audio::play_once(audio_system, "Jump.wav", 0.5f);
             }
             draw_rectangle(&canvas, &atlas, x, y, 0, 0, 128, 128);
+
+            draw_line(&canvas, x, y, 150, 150, 0xFFFFFF);
         }
 
-        {
-#if 0
-            draw_text(&canvas, &test_font_atlas, &test_font,
-                      "Feet tread on the bones\n"
-                      "nothing sees what we need.", 32, 32);
-#endif
-            monitor_lock(monitor);
+        if (show_monitoring_overlay) {
+            monitoring::lock();
+            monitoring::sort_readings();
             int y = 0;
             const char *text;
-            while ((text = monitor_pull_reading(monitor))) {
+            while ((text = monitoring::pull_reading())) {
                 draw_text(&canvas, &test_font_atlas, &test_font, text, 0, y);
                 y += 14;
             }
-            monitor_unlock(monitor);
+            monitoring::unlock();
         }
+        monitoring::flush_readings();
 
         frame_flip ^= 1;
         snes_ntsc_blit(ntsc_scaler, reinterpret_cast<SNES_NTSC_IN_T *>(canvas.buffer),
                        canvas.width, frame_flip, canvas.width, canvas.height,
-                       wide_canvas.buffer, 4 * wide_canvas.width);
+                       wide_framebuffer.pixels, 4 * wide_framebuffer.width);
 
-        double_vertically_and_flip(&framebuffer, &wide_canvas);
+        double_vertically_and_flip(&framebuffer, &wide_framebuffer);
 
-        END_MONITORING(monitor, drawing);
+        END_MONITORING(drawing);
 
         input::poll(input_system);
 
         // Flush the events queue and respond to any pertinent events.
-        XEvent event = {};
         while (XPending(display) > 0) {
+            XEvent event = {};
             XNextEvent(display, &event);
             switch (event.type) {
                 case KeyPress: {
@@ -772,12 +903,12 @@ int main(int argc, char *argv[]) {
     // Shutdown all systems.
     audio::shutdown(audio_system);
     input::shutdown(input_system);
+    monitoring::shutdown();
 
     // Free and destroy any system resources.
-    monitor_destroy(monitor);
-    DEALLOCATE(framebuffer.pixels);
-    DEALLOCATE(wide_canvas.buffer);
-    DEALLOCATE(canvas.buffer);
+    framebuffer_destroy(&framebuffer);
+    framebuffer_destroy(&wide_framebuffer);
+    canvas_destroy(&canvas);
     DEALLOCATE(ntsc_scaler);
 
     glXDestroyContext(display, rendering_context);

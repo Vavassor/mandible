@@ -24,20 +24,20 @@ source_group ("Header Files" FILES ${INCLUDES})
 
 # ----- SOURCE FILES -----
 set (SOURCES
-    atomic.c
+    atomic.cpp
     audio.cpp
-    evdev_text.c
-    font.c
-    glx_extensions.c
+    evdev_text.cpp
+    font.cpp
+    glx_extensions.cpp
     input.cpp
     logging.cpp
-    monitoring.c
+    monitoring.cpp
     main.cpp
     snes_ntsc.c
     stb_vorbis.c
-    string_utilities.c
-    unicode.c
-    wave_decoder.c
+    string_utilities.cpp
+    unicode.cpp
+    wave_decoder.cpp
 )
 source_group ("Source Files" FILES ${SOURCES})
 

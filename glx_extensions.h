@@ -5,12 +5,6 @@
 #include <X11/Xutil.h>
 #include <GL/glx.h>
 
-#include <stdbool.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* GLX_EXT_swap_control......................................................*/
 
 extern bool have_ext_swap_control;
@@ -24,9 +18,5 @@ extern void (*ptrc_glXSwapIntervalEXT)(Display *display, GLXDrawable drawable, i
 /* Load GLX Extensions.......................................................*/
 
 void load_glx_extensions(Display *display, int screen);
-
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
 
 #endif /* GLX_EXTENSIONS_H_ */

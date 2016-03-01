@@ -102,7 +102,7 @@ static void release_key(KeyboardState *keyboard_state, u32 key_symbol) {
 
 static void update_key_change_counts(KeyboardState *keyboard_state) {
     for (int i = 0; i < KEY_MAPPING_COUNT; ++i) {
-        ++keyboard_state->edge_counts[i];
+        keyboard_state->edge_counts[i] += 1;
     }
 }
 
@@ -179,7 +179,7 @@ static bool evdev_setup_device(Device *device) {
         if (CHECK_BIT(keybit, i)) {
             LOG_DEBUG("has button: 0x%x %s", i, button_code_text(i));
             device->button_map[i - BTN_MISC] = device->button_count;
-            ++device->button_count;
+            device->button_count += 1;
         }
     }
 
@@ -188,7 +188,7 @@ static bool evdev_setup_device(Device *device) {
         if (CHECK_BIT(keybit, i)) {
             LOG_DEBUG("has button: 0x%x %s", i, button_code_text(i));
             device->button_map[i - BTN_MISC] = device->button_count;
-            ++device->button_count;
+            device->button_count += 1;
         }
     }
 
@@ -236,7 +236,7 @@ static bool evdev_setup_device(Device *device) {
             device->axis_attributes[i].coefficients[0] = a;
             device->axis_attributes[i].coefficients[1] = b;
 
-            ++device->axis_count;
+            device->axis_count += 1;
         }
     }
 
@@ -252,13 +252,13 @@ static bool evdev_setup_device(Device *device) {
                       (i - ABS_HAT0X) / 2, abs_code_text(i),
                       absinfo.value, absinfo.minimum, absinfo.maximum,
                       absinfo.fuzz, absinfo.flat, absinfo.resolution);
-            ++device->hat_count;
+            device->hat_count += 1;
         }
     }
 
     if (CHECK_BIT(relbit, REL_X) || CHECK_BIT(relbit, REL_Y)) {
         // Balls are not used yet, but register their existence anyways.
-        ++device->ball_count;
+        device->ball_count += 1;
     }
 
     return true;
@@ -287,7 +287,7 @@ static bool js_setup_device(Device *device) {
                 }
                 LOG_DEBUG("has axis: 0x%x", event.number);
                 device->absolute_map[event.number] = device->axis_count;
-                ++device->axis_count;
+                device->axis_count += 1;
             } break;
 
             case JS_EVENT_BUTTON: {
@@ -297,7 +297,7 @@ static bool js_setup_device(Device *device) {
                 }
                 LOG_DEBUG("has button: 0x%x", event.number);
                 device->button_map[event.number] = device->button_count;
-                ++device->button_count;
+                device->button_count += 1;
             } break;
         }
     }
@@ -362,7 +362,7 @@ static void add_device(DeviceCollection *device_collection, udev_device *device)
 
     if (device_setup) {
         device_collection->devices[device_collection->device_count] = added_device;
-        ++device_collection->device_count;
+        device_collection->device_count += 1;
     } else {
         close_device(&added_device);
     }
@@ -383,7 +383,7 @@ static void remove_device(DeviceCollection *device_collection, udev_device *devi
             if (final >= 0) {
                 device_collection->devices[i] = device_collection->devices[final];
             }
-            --device_collection->device_count;
+            device_collection->device_count -= 1;
             break;
         }
     }
@@ -524,20 +524,27 @@ struct System {
 };
 
 System *startup() {
-    System *system = static_cast<System *>(std::malloc(sizeof(System)));
-    CLEAR_STRUCT(system);
+    System *system = static_cast<System *>(std::calloc(1, sizeof(System)));
+    if (!system) {
+        LOG_ERROR("Not enough memory to allocate the system.");
+        return NULL;
+    }
 
     // create library interface
     udev *udev = udev_new();
     if (!udev) {
-        // @Incomplete: log error
+        LOG_ERROR("Could not create udev library context for gamepad input.");
+        shutdown(system);
+        return NULL;
     }
     system->context = udev;
 
     // create monitor for device-changed notifications
     udev_monitor *device_monitor = udev_monitor_new_from_netlink(udev, "udev");
     if (!device_monitor) {
-        // @Incomplete: log error
+        LOG_ERROR("Could not create a monitor for detecting device changes.");
+        shutdown(system);
+        return NULL;
     }
     system->device_monitor = device_monitor;
 
@@ -552,12 +559,18 @@ System *startup() {
 }
 
 void shutdown(System *system) {
-    for (int i = 0; i < system->device_collection.device_count; ++i) {
-        close_device(system->device_collection.devices + i);
+    if (system) {
+        for (int i = 0; i < system->device_collection.device_count; ++i) {
+            close_device(system->device_collection.devices + i);
+        }
+        if (system->device_monitor) {
+            udev_monitor_unref(system->device_monitor);
+        }
+        if (system->context) {
+            udev_unref(system->context);
+        }
+        std::free(system);
     }
-    udev_monitor_unref(system->device_monitor);
-    udev_unref(system->context);
-    std::free(system);
 }
 
 void poll(System *system) {
