@@ -6,7 +6,7 @@
     case code: return #code;
 
 const char *button_code_text(int virtual_code) {
-    switch(virtual_code) {
+    switch (virtual_code) {
         // BTN_MISC
         TEXT_CASE(BTN_0);
         TEXT_CASE(BTN_1);

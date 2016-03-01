@@ -2,17 +2,14 @@
 
 char16_t* utf8_to_utf16(const char* s, char16_t* buffer, size_t count)
 {
-    size_t   i;
-    char32_t c;
-    unsigned char* str;
-
-	str = (unsigned char*) s;
+	unsigned char* str = (unsigned char*) s;
     --count;
-    i = 0;
+    size_t i = 0;
 	while(*str)
 	{
 		if(i >= count) return NULL;
 
+		char32_t c;
 		if(!(*str & 0x80))
 		{
 			buffer[i++] = *str++;
@@ -69,13 +66,11 @@ char16_t* utf8_to_utf16(const char* s, char16_t* buffer, size_t count)
 
 char* utf16_to_utf8(const char16_t* str, char* buffer, size_t count)
 {
-    size_t   i;
-    char32_t c;
-
 	--count;
-	i = 0;
+	size_t i = 0;
 	while(*str)
 	{
+	    char32_t c;
 		if(*str < 0x80)
 		{
 			if(i + 1 > count) return NULL;
@@ -118,9 +113,6 @@ char* utf16_to_utf8(const char16_t* str, char* buffer, size_t count)
 static char32_t utf32_at_internal(const char* cur, size_t* num_read)
 {
     const char first_char = *cur;
-    char32_t   mask, to_ignore_mask, codepoint;
-    size_t     num_to_read;
-
     if ((first_char & 0x80) == 0)
     {
         // ASCII
@@ -128,8 +120,10 @@ static char32_t utf32_at_internal(const char* cur, size_t* num_read)
         return *cur;
     }
     ++cur;
-    num_to_read = 0;
-    codepoint = first_char;
+
+    size_t num_to_read = 0;
+    char32_t mask, to_ignore_mask;
+    char32_t codepoint = first_char;
     for (num_to_read = 1, mask = 0x40, to_ignore_mask = 0xFFFFFF80;
          first_char & mask;
          ++num_to_read, to_ignore_mask |= mask, mask >>= 1)
@@ -147,16 +141,12 @@ static char32_t utf32_at_internal(const char* cur, size_t* num_read)
 size_t utf8_to_utf32(const char* src, size_t src_len,
                      char32_t* dst, size_t dst_len)
 {
-    const char     *cur, *end;
-    char32_t       *cur_utf32;
-    const char32_t *end_utf32;
-
     if (src == NULL || src_len == 0 || dst == NULL || dst_len == 0) return 0;
 
-    cur = src;
-    end = src + src_len;
-    cur_utf32 = dst;
-    end_utf32 = dst + dst_len;
+    const char* cur = src;
+    const char* end = src + src_len;
+    char32_t* cur_utf32 = dst;
+    const char32_t* end_utf32 = dst + dst_len;
     while (cur_utf32 < end_utf32 && cur < end)
     {
         size_t num_read;
@@ -209,10 +199,8 @@ size_t utf8_codepoint_count(const char* s)
 
 size_t utf32_octet_count(const char32_t* s, size_t n)
 {
-    size_t count, i;
-
-	count = 0;
-	for(i = 0; i < n; ++i)
+	size_t count = 0;
+	for(size_t i = 0; i < n; ++i)
 	{
 		if(s[i] < 0x80)         count += 1;
 		else if(s[i] < 0x800)   count += 2;

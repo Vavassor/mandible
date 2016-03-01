@@ -1,11 +1,10 @@
 #include "wave_decoder.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <string.h>
-#include <assert.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstdint>
+#include <cstring>
+#include <cassert>
 
 #if defined(__GNUC__)
 #define ALWAYS_INLINE inline __attribute__((always_inline))
@@ -36,18 +35,18 @@ static u32 pad_chunk_size(u32 x) {
     return (x + 1) & ~1;
 }
 
-typedef enum {
+enum Format {
     FORMAT_NONE,
     FORMAT_INTEGER,
     FORMAT_IEEE754_FLOAT, // Institute for Electrical and Electronic Engineers' Standard 754 for Floating-Point Arithmetic
     FORMAT_MS_ADPCM, // Microsoft Adaptive Differential Pulse-Code Modulation
-} Format;
+};
 
-typedef struct {
+struct MsAdpcmData {
     s16 coefficients[256][2];
     u16 num_coefficients;
     u16 frames_per_block;
-} MsAdpcmData;
+};
 
 struct WaveDecoder {
     MsAdpcmData ms_adpcm_data;
@@ -63,7 +62,7 @@ struct WaveDecoder {
     } encoded;
 
     s64 data_chunk_position; // where the data chunk is in the file, as an offset in bytes
-    FILE *file;
+    std::FILE *file;
     bool end_of_file;
     u32 frame_count;
     u32 frames_left;
@@ -76,7 +75,7 @@ struct WaveDecoder {
 };
 
 static ALWAYS_INLINE u8 extract8(WaveDecoder *decoder) {
-   int byte = fgetc(decoder->file);
+   int byte = std::fgetc(decoder->file);
    if (byte == EOF) {
        decoder->end_of_file = true;
        return 0;
@@ -87,33 +86,34 @@ static ALWAYS_INLINE u8 extract8(WaveDecoder *decoder) {
 static u16 extract16(WaveDecoder *decoder) {
     u16 x;
     x = extract8(decoder);
-    x += (u16) extract8(decoder) << 8;
+    x += static_cast<u16>(extract8(decoder)) << 8;
     return x;
 }
 
 static u32 extract32(WaveDecoder *decoder) {
     u32 x;
     x = extract8(decoder);
-    x += (u32) extract8(decoder) << 8;
-    x += (u32) extract8(decoder) << 16;
-    x += (u32) extract8(decoder) << 24;
+    x += static_cast<u32>(extract8(decoder)) << 8;
+    x += static_cast<u32>(extract8(decoder)) << 16;
+    x += static_cast<u32>(extract8(decoder)) << 24;
     return x;
 }
 
-static size_t extract_bytes(WaveDecoder *decoder, u8 *data, size_t bytes) {
-    size_t bytes_read = fread(data, 1, bytes, decoder->file);
+static std::size_t extract_bytes(WaveDecoder *decoder, u8 *data,
+                                 std::size_t bytes) {
+    std::size_t bytes_read = std::fread(data, 1, bytes, decoder->file);
     if (bytes_read != bytes) {
         decoder->end_of_file = true;
     }
     return bytes_read;
 }
 
-static void skip_bytes(WaveDecoder *decoder, size_t bytes) {
-    fseek(decoder->file, bytes, SEEK_CUR);
+static void skip_bytes(WaveDecoder *decoder, std::size_t bytes) {
+    std::fseek(decoder->file, bytes, SEEK_CUR);
 }
 
 static size_t get_ms_adpcm_specific(WaveDecoder *decoder) {
-    size_t bytes_read;
+    std::size_t bytes_read;
 
     u16 frames_per_block = extract16(decoder);
     /* assert(frames_per_block == (block_alignment - 7 * num_channels) * 8 /
@@ -123,8 +123,7 @@ static size_t get_ms_adpcm_specific(WaveDecoder *decoder) {
     u16 num_coefficients = extract16(decoder);
     assert(num_coefficients < 256);
     decoder->ms_adpcm_data.num_coefficients = num_coefficients;
-    u16 i;
-    for (i = 0; i < num_coefficients; ++i) {
+    for (u16 i = 0; i < num_coefficients; ++i) {
         decoder->ms_adpcm_data.coefficients[i][0] = (s16) extract16(decoder);
         decoder->ms_adpcm_data.coefficients[i][1] = (s16) extract16(decoder);
     }
@@ -140,16 +139,16 @@ static size_t get_ms_adpcm_specific(WaveDecoder *decoder) {
 #define WAVE_FORMAT_IEEE_FLOAT 0x0003
 #define WAVE_FORMAT_EXTENSIBLE 0xFFFE
 
-typedef struct {
+struct GUID {
     u32 data1;
     u16 data2;
     u16 data3;
     u8 data4[8];
-} GUID;
+};
 
 #define DEFINE_WAVE_FORMAT_GUID(name, type) \
     static const GUID name = \
-        { (u32) type, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 } }
+        { static_cast<u32>(type), 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 } }
 
 DEFINE_WAVE_FORMAT_GUID(STATIC_KSDATAFORMAT_SUBTYPE_PCM, WAVE_FORMAT_PCM);
 #define KSDATAFORMAT_SUBTYPE_PCM STATIC_KSDATAFORMAT_SUBTYPE_PCM
@@ -160,7 +159,7 @@ DEFINE_WAVE_FORMAT_GUID(STATIC_KSDATAFORMAT_SUBTYPE_ADPCM, WAVE_FORMAT_ADPCM);
 DEFINE_WAVE_FORMAT_GUID(STATIC_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT);
 #define KSDATAFORMAT_SUBTYPE_IEEE_FLOAT STATIC_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
 
-#define GUID_EQUALS(a, b) (!memcmp(&(a), &(b), sizeof(GUID)))
+#define GUID_EQUALS(a, b) (!std::memcmp(&(a), &(b), sizeof(GUID)))
 
 static bool read_format_chunk(WaveDecoder *decoder, u32 chunk_size) {
     u16 format_type = extract16(decoder);
@@ -193,7 +192,7 @@ static bool read_format_chunk(WaveDecoder *decoder, u32 chunk_size) {
             decoder->format = FORMAT_MS_ADPCM;
 
             u16 extension_size = extract16(decoder);
-            size_t bytes_read = get_ms_adpcm_specific(decoder);
+            std::size_t bytes_read = get_ms_adpcm_specific(decoder);
             if (extension_size > bytes_read) {
                 skip_bytes(decoder, extension_size - bytes_read);
             }
@@ -228,7 +227,7 @@ static bool read_format_chunk(WaveDecoder *decoder, u32 chunk_size) {
 
             } else if (GUID_EQUALS(guid, KSDATAFORMAT_SUBTYPE_ADPCM)) {
                 decoder->format = FORMAT_MS_ADPCM;
-                size_t bytes_read = get_ms_adpcm_specific(decoder);
+                std::size_t bytes_read = get_ms_adpcm_specific(decoder);
                 extension_size -= 22 + bytes_read;
 
             } else if (GUID_EQUALS(guid, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)) {
@@ -285,8 +284,8 @@ static bool ready_for_data_chunk(WaveDecoder *decoder, u32 chunk_size) {
         decoder->decoded.buffer_size = block_size;
     }
 
-    decoder->encoded.block = malloc(decoder->encoded.block_size);
-    decoder->decoded.buffer = malloc(decoder->decoded.buffer_size);
+    decoder->encoded.block = std::malloc(decoder->encoded.block_size);
+    decoder->decoded.buffer = std::malloc(decoder->decoded.buffer_size);
 
     decoder->decoded.frames = 0;
     decoder->decoded.start = 0;
@@ -352,12 +351,12 @@ static bool determine_format_and_ready(WaveDecoder *decoder) {
     return false;
 }
 
-typedef struct {
+struct MsAdpcmState {
     u16 delta;
     s16 sample1;
     s16 sample2;
     u8 predictor;
-} MsAdpcmState;
+};
 
 static s16 ms_adpcm_decode_sample(MsAdpcmState *state, u8 code,
                                   const s16 *coefficient_set) {
@@ -383,7 +382,7 @@ static s16 ms_adpcm_decode_sample(MsAdpcmState *state, u8 code,
     }
 
     s32 delta;
-    delta = ((s32) state->delta * adaption_table[code]) / 256;
+    delta = (static_cast<s32>(state->delta) * adaption_table[code]) / 256;
     if (delta < 16) {
         delta = 16;
     }
@@ -392,11 +391,12 @@ static s16 ms_adpcm_decode_sample(MsAdpcmState *state, u8 code,
     state->sample2 = state->sample1;
     state->sample1 = predicted_sample;
 
-    return (s16) predicted_sample;
+    return static_cast<s16>(predicted_sample);
 }
 
 static u32 ms_adpcm_decode_block(MsAdpcmData *adpcm_data, int channels,
                                  u8 *encoded, s16 *decoded) {
+
     u32 output_length = adpcm_data->frames_per_block * sizeof(s16) *
                         channels;
 
@@ -409,22 +409,21 @@ static u32 ms_adpcm_decode_block(MsAdpcmData *adpcm_data, int channels,
         state[1] = &decoder_state[0];
     }
 
-    int i;
-    for (i = 0; i < channels; ++i) {
+    for (int i = 0; i < channels; ++i) {
         state[i]->predictor = *encoded++;
         assert(state[i]->predictor < adpcm_data->num_coefficients);
     }
 
-    for (i = 0; i < channels; ++i) {
+    for (int i = 0; i < channels; ++i) {
         state[i]->delta = (encoded[1] << 8) | encoded[0];
         encoded += sizeof(u16);
     }
 
-    for (i = 0; i < channels; ++i) {
+    for (int i = 0; i < channels; ++i) {
         state[i]->sample1 = (encoded[1] << 8) | encoded[0];
         encoded += sizeof(s16);
     }
-    for (i = 0; i < channels; ++i) {
+    for (int i = 0; i < channels; ++i) {
         state[i]->sample2 = (encoded[1] << 8) | encoded[0];
         encoded += sizeof(s16);
     }
@@ -433,10 +432,10 @@ static u32 ms_adpcm_decode_block(MsAdpcmData *adpcm_data, int channels,
     coefficient[0] = adpcm_data->coefficients[state[0]->predictor];
     coefficient[1] = adpcm_data->coefficients[state[1]->predictor];
 
-    for (i = 0; i < channels; ++i) {
+    for (int i = 0; i < channels; ++i) {
         *decoded++ = state[i]->sample2;
     }
-    for (i = 0; i < channels; ++i) {
+    for (int i = 0; i < channels; ++i) {
         *decoded++ = state[i]->sample1;
     }
 
@@ -456,61 +455,61 @@ static u32 ms_adpcm_decode_block(MsAdpcmData *adpcm_data, int channels,
 }
 
 static ALWAYS_INLINE u8 pull_u8(const void *buffer) {
-    return ((const u8 *) buffer)[0];
+    return static_cast<const u8 *>(buffer)[0];
 }
 
 static ALWAYS_INLINE u16 pull_u16(const void *buffer) {
-    const u8 *b = (const u8 *) buffer;
+    const u8 *b = static_cast<const u8 *>(buffer);
     u16 x;
     x = b[0];
-    x += (u16) b[1] << 8;
+    x += static_cast<u16>(b[1]) << 8;
     return x;
 }
 
 static ALWAYS_INLINE u32 pull_u32(const void *buffer) {
-    const u8 *b = (const u8 *) buffer;
+    const u8 *b = static_cast<const u8 *>(buffer);
     u32 x;
     x = b[0];
-    x += (u32) b[1] << 8;
-    x += (u32) b[2] << 16;
-    x += (u32) b[3] << 24;
+    x += static_cast<u32>(b[1]) << 8;
+    x += static_cast<u32>(b[2]) << 16;
+    x += static_cast<u32>(b[3]) << 24;
     return x;
 }
 
 static ALWAYS_INLINE float pull_float(const void *buffer) {
-    const u8 *b = (const u8 *) buffer;
+    const u8 *b = static_cast<const u8 *>(buffer);
     u32 x;
     x = b[0];
-    x += (u32) b[1] << 8;
-    x += (u32) b[2] << 16;
-    x += (u32) b[3] << 24;
-    return *((float *) &x);
+    x += static_cast<u32>(b[1]) << 8;
+    x += static_cast<u32>(b[2]) << 16;
+    x += static_cast<u32>(b[3]) << 24;
+    return *(reinterpret_cast<float *>(&x));
 }
 
 static ALWAYS_INLINE double pull_double(const void *buffer) {
-    const u8 *b = (const u8 *) buffer;
+    const u8 *b = static_cast<const u8 *>(buffer);
     u64 x;
     x = b[0];
-    x += (u64) b[1] << 8;
-    x += (u64) b[2] << 16;
-    x += (u64) b[3] << 24;
-    x += (u64) b[4] << 32;
-    x += (u64) b[5] << 40;
-    x += (u64) b[6] << 48;
-    x += (u64) b[7] << 56;
-    return *((double *) &x);
+    x += static_cast<u64>(b[1]) << 8;
+    x += static_cast<u64>(b[2]) << 16;
+    x += static_cast<u64>(b[3]) << 24;
+    x += static_cast<u64>(b[4]) << 32;
+    x += static_cast<u64>(b[5]) << 40;
+    x += static_cast<u64>(b[6]) << 48;
+    x += static_cast<u64>(b[7]) << 56;
+    return *(reinterpret_cast<double *>(&x));
 }
 
-static size_t round_up(size_t x, size_t multiple) {
+static std::size_t round_up(std::size_t x, std::size_t multiple) {
     return x + multiple - 1 - (x - 1) % multiple;
 }
 
 static void fetch_and_decode_block(WaveDecoder *decoder) {
     // Fill the internal buffer with sample data bytes from file.
 
-    size_t bytes_requested;
+    std::size_t bytes_requested;
     bytes_requested = decoder->encoded.block_size;
-    size_t data_bytes_left;
+    std::size_t data_bytes_left;
     if (decoder->format == FORMAT_MS_ADPCM) {
         data_bytes_left = (decoder->frames_left * decoder->channels) / 2;
         data_bytes_left = round_up(data_bytes_left,
@@ -526,18 +525,18 @@ static void fetch_and_decode_block(WaveDecoder *decoder) {
         return;
     }
 
-    size_t bytes_got = extract_bytes(decoder, decoder->encoded.block,
-                                     bytes_requested);
+    std::size_t bytes_got =
+            extract_bytes(decoder, static_cast<u8 *>(decoder->encoded.block),
+                          bytes_requested);
 
     // The bytes that are fetched from file are in little-endian order,
     // so for linear PCM formats, this is used to convert to native-endian
     // order in-place inside the encoded buffer.
-#define STRAIGHTEN(type)                                         \
-    const type *encoded = (const type *) decoder->encoded.block; \
-    type *decoded = (type *) decoder->decoded.buffer;            \
-    int i;                                                       \
-    for (i = 0; i < samples; ++i) {                              \
-        decoded[i] = pull_##type(encoded + i);                   \
+#define STRAIGHTEN(type)                                                     \
+    const type *encoded = static_cast<const type *>(decoder->encoded.block); \
+    type *decoded = static_cast<type *>(decoder->decoded.buffer);            \
+    for (int i = 0; i < samples; ++i) {                                      \
+        decoded[i] = pull_##type(encoded + i);                               \
     }
 
     u32 decoded_frames = 0;
@@ -564,8 +563,8 @@ static void fetch_and_decode_block(WaveDecoder *decoder) {
 
         case FORMAT_MS_ADPCM: {
             ms_adpcm_decode_block(&decoder->ms_adpcm_data, decoder->channels,
-                                  decoder->encoded.block,
-                                  decoder->decoded.buffer);
+                                  static_cast<u8 *>(decoder->encoded.block),
+                                  static_cast<s16 *>(decoder->decoded.buffer));
             decoded_frames = decoder->ms_adpcm_data.frames_per_block;
             if (decoded_frames > decoder->frames_left) {
                 decoded_frames = decoder->frames_left;
@@ -585,18 +584,18 @@ static void fetch_and_decode_block(WaveDecoder *decoder) {
 }
 
 static ALWAYS_INLINE float format_u8(u8 value) {
-    const float scale = 1.0f / 255.0f;
-    return (float) value * scale;
+    const float scale = static_cast<float>(1.0 / 255.0);
+    return static_cast<float>(value) * scale;
 }
 
 static ALWAYS_INLINE float format_s16(s16 value) {
-    const float scale = (float) (1.0 / 32767.5);
-    return ((float) value + 0.5f) * scale;
+    const float scale = static_cast<float>(1.0f / 32767.5f);
+    return (static_cast<float>(value) + 0.5f) * scale;
 }
 
 static ALWAYS_INLINE float format_s32(s32 value) {
-    const float scale = (float) (1.0 / 2147483647.5);
-    return ((float) value + 0.5f) * scale;
+    const float scale = static_cast<float>(1.0 / 2147483647.5);
+    return (static_cast<float>(value) + 0.5f) * scale;
 }
 
 static ALWAYS_INLINE float format_float(float value) {
@@ -604,7 +603,7 @@ static ALWAYS_INLINE float format_float(float value) {
 }
 
 static ALWAYS_INLINE float format_double(double value) {
-    return (float) value;
+    return static_cast<float>(value);
 }
 
 int wave_decode_interleaved(WaveDecoder *decoder, int out_channels,
@@ -618,18 +617,18 @@ int wave_decode_interleaved(WaveDecoder *decoder, int out_channels,
     int frame_count = sample_count / out_channels;
     int frames_remaining = frame_count;
 
-#define FORMAT_FRAMES(type, frames)                                     \
-    const type *decoded_buffer = (const type *)decoder->decoded.buffer; \
-    int i;                                                              \
-    for (i = 0; i < (frames); ++i) {                                    \
-        int x = decoder->channels * (decoder->decoded.start + i);       \
-        int j;                                                          \
-        for (j = 0; j < channels; ++j) {                                \
-            *buffer++ = format_##type(decoded_buffer[x + j]);           \
-        }                                                               \
-        for (; j < out_channels; ++j) {                                 \
-            *buffer++ = 0;                                              \
-        }                                                               \
+#define FORMAT_FRAMES(type, frames)                               \
+    const type *decoded_buffer =                                  \
+            static_cast<const type *>(decoder->decoded.buffer);   \
+    for (int i = 0; i < (frames); ++i) {                          \
+        int x = decoder->channels * (decoder->decoded.start + i); \
+        int j;                                                    \
+        for (j = 0; j < channels; ++j) {                          \
+            *buffer++ = format_##type(decoded_buffer[x + j]);     \
+        }                                                         \
+        for (; j < out_channels; ++j) {                           \
+            *buffer++ = 0;                                        \
+        }                                                         \
     }
 
     while (frames_remaining > 0) {
@@ -683,24 +682,28 @@ int wave_decode_interleaved(WaveDecoder *decoder, int out_channels,
 void wave_seek_start(WaveDecoder *decoder) {
     decoder->decoded.frames = 0;
     decoder->decoded.start = 0;
-    fseek(decoder->file, decoder->data_chunk_position, SEEK_SET);
+    std::fseek(decoder->file, decoder->data_chunk_position, SEEK_SET);
     decoder->frames_left = decoder->frame_count;
+}
+
+int wave_channels(WaveDecoder *decoder) {
+    return decoder->channels;
 }
 
 WaveDecoder *wave_open_file(const char *filename) {
     WaveDecoder *decoder;
 
-    decoder = calloc(1, sizeof(WaveDecoder));
+    decoder = static_cast<WaveDecoder *>(std::calloc(1, sizeof(WaveDecoder)));
     if (!decoder) {
         // Failed to allocate the memory needed to decode the wave file.
         return NULL;
     }
 
-    FILE *file;
-    file = fopen(filename, "rb");
+    std::FILE *file;
+    file = std::fopen(filename, "rb");
     if (!file) {
         // The file was not able to be opened.
-        free(decoder);
+        wave_close_file(decoder);
         return NULL;
     }
     decoder->file = file;
@@ -708,8 +711,7 @@ WaveDecoder *wave_open_file(const char *filename) {
     if (!determine_format_and_ready(decoder)) {
         // File was not of a supported format or was corrupted in some way that
         // would prevent it from being decoded properly.
-        fclose(decoder->file);
-        free(decoder);
+        wave_close_file(decoder);
         return NULL;
     }
 
@@ -719,14 +721,14 @@ WaveDecoder *wave_open_file(const char *filename) {
 void wave_close_file(WaveDecoder *decoder) {
     if (decoder) {
         if (decoder->file) {
-            fclose(decoder->file);
+            std::fclose(decoder->file);
         }
         if (decoder->encoded.block) {
-            free(decoder->encoded.block);
+            std::free(decoder->encoded.block);
         }
         if (decoder->decoded.buffer) {
-            free(decoder->decoded.buffer);
+            std::free(decoder->decoded.buffer);
         }
-        free(decoder);
+        std::free(decoder);
     }
 }
