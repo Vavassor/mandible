@@ -21,7 +21,7 @@
 // General-Use Macros and Functions............................................
 
 #define ALLOCATE_STRUCT(type) \
-    static_cast<type *>(std::malloc(sizeof(type)));
+    static_cast<type*>(std::malloc(sizeof(type)));
 
 #define DEALLOCATE_STRUCT(s) \
     std::free(s);
@@ -30,7 +30,7 @@
     std::memset((s), 0, sizeof *(s));
 
 #define ALLOCATE_ARRAY(type, count) \
-    static_cast<type *>(std::malloc(sizeof(type) * (count)));
+    static_cast<type*>(std::malloc(sizeof(type) * (count)));
 
 #define DEALLOCATE_ARRAY(a) \
     std::free(a);
@@ -261,8 +261,8 @@ struct ConversionInfo {
 };
 
 template <typename From, typename To>
-static void convert_buffer(const From *in, To *out, int frames,
-                           ConversionInfo *info) {
+static void convert_buffer(const From* in, To* out, int frames,
+                           ConversionInfo* info) {
     for (int i = 0; i < frames; ++i) {
         for (int j = 0; j < info->channels; ++j) {
             out[j] = convert<From, To>(in[j]);
@@ -273,50 +273,50 @@ static void convert_buffer(const From *in, To *out, int frames,
 }
 
 template <typename From>
-static void convert_from_source_format(From *in, void *out, int frames, ConversionInfo *info) {
+static void convert_from_source_format(From* in, void* out, int frames, ConversionInfo* info) {
     switch (info->out.format) {
         case FORMAT_S8:
-            convert_buffer<From, s8>(in, static_cast<s8 *>(out), frames, info);
+            convert_buffer<From, s8>(in, static_cast<s8*>(out), frames, info);
             break;
         case FORMAT_S16:
-            convert_buffer<From, s16>(in, static_cast<s16 *>(out), frames, info);
+            convert_buffer<From, s16>(in, static_cast<s16*>(out), frames, info);
             break;
         case FORMAT_S24:
-            convert_buffer<From, s24>(in, static_cast<s24 *>(out), frames, info);
+            convert_buffer<From, s24>(in, static_cast<s24*>(out), frames, info);
             break;
         case FORMAT_S32:
-            convert_buffer<From, s32>(in, static_cast<s32 *>(out), frames, info);
+            convert_buffer<From, s32>(in, static_cast<s32*>(out), frames, info);
             break;
         case FORMAT_F32:
-            convert_buffer<From, float>(in, static_cast<float *>(out), frames, info);
+            convert_buffer<From, float>(in, static_cast<float*>(out), frames, info);
             break;
         case FORMAT_F64:
-            convert_buffer<From, double>(in, static_cast<double *>(out), frames, info);
+            convert_buffer<From, double>(in, static_cast<double*>(out), frames, info);
             break;
     }
 }
 
 // This function does format conversion, input/output channel compensation, and
 // data interleaving/deinterleaving.
-static void convert_format(void *in_samples, void *out_samples, int frames, ConversionInfo *info) {
+static void convert_format(void* in_samples, void* out_samples, int frames, ConversionInfo* info) {
     switch (info->in.format) {
         case FORMAT_S8:
-            convert_from_source_format<s8>(static_cast<s8 *>(in_samples), out_samples, frames, info);
+            convert_from_source_format<s8>(static_cast<s8*>(in_samples), out_samples, frames, info);
             break;
         case FORMAT_S16:
-            convert_from_source_format<s16>(static_cast<s16 *>(in_samples), out_samples, frames, info);
+            convert_from_source_format<s16>(static_cast<s16*>(in_samples), out_samples, frames, info);
             break;
         case FORMAT_S24:
-            convert_from_source_format<s24>(static_cast<s24 *>(in_samples), out_samples, frames, info);
+            convert_from_source_format<s24>(static_cast<s24*>(in_samples), out_samples, frames, info);
             break;
         case FORMAT_S32:
-            convert_from_source_format<s32>(static_cast<s32 *>(in_samples), out_samples, frames, info);
+            convert_from_source_format<s32>(static_cast<s32*>(in_samples), out_samples, frames, info);
             break;
         case FORMAT_F32:
-            convert_from_source_format<float>(static_cast<float *>(in_samples), out_samples, frames, info);
+            convert_from_source_format<float>(static_cast<float*>(in_samples), out_samples, frames, info);
             break;
         case FORMAT_F64:
-            convert_from_source_format<double>(static_cast<double *>(in_samples), out_samples, frames, info);
+            convert_from_source_format<double>(static_cast<double*>(in_samples), out_samples, frames, info);
             break;
     }
 }
@@ -324,15 +324,15 @@ static void convert_format(void *in_samples, void *out_samples, int frames, Conv
 #define F_TAU 6.28318530717958647692f
 
 static float pitch_to_frequency(int pitch) {
-    return 440.0f * pow(2.0f, static_cast<float>(pitch - 69) / 12.0f);
+    return 440.0f * std::pow(2.0f, static_cast<float>(pitch - 69) / 12.0f);
 }
 
-static void generate_sine_samples(void *samples, int count, int channels,
+static void generate_sine_samples(void* samples, int count, int channels,
                                   u32 sample_rate, double time,
                                   int pitch, float amplitude) {
     float frequency = pitch_to_frequency(pitch);
     float theta = F_TAU * frequency;
-    float *out = reinterpret_cast<float *>(samples);
+    float* out = static_cast<float*>(samples);
     for (int i = 0; i < count; ++i) {
         for (int j = 0; j < channels; ++j) {
             float t = static_cast<float>(i) / sample_rate + time;
@@ -343,9 +343,9 @@ static void generate_sine_samples(void *samples, int count, int channels,
 
 // Advanced Linux Sound Architecture device back-end...........................
 
-static int finalize_hw_params(snd_pcm_t *pcm_handle,
-                              snd_pcm_hw_params_t *hw_params, bool override,
-                              u64 *frames) {
+static int finalize_hw_params(snd_pcm_t* pcm_handle,
+                              snd_pcm_hw_params_t* hw_params, bool override,
+                              u64* frames) {
     int status;
 
     status = snd_pcm_hw_params(pcm_handle, hw_params);
@@ -366,12 +366,12 @@ static int finalize_hw_params(snd_pcm_t *pcm_handle,
     return 0;
 }
 
-static int set_period_size(snd_pcm_t *pcm_handle,
-                           snd_pcm_hw_params_t *hw_params, bool override,
-                           u64 *frames) {
+static int set_period_size(snd_pcm_t* pcm_handle,
+                           snd_pcm_hw_params_t* hw_params, bool override,
+                           u64* frames) {
     int status;
 
-    snd_pcm_hw_params_t *hw_params_copy;
+    snd_pcm_hw_params_t* hw_params_copy;
     snd_pcm_hw_params_alloca(&hw_params_copy);
     snd_pcm_hw_params_copy(hw_params_copy, hw_params);
 
@@ -381,14 +381,14 @@ static int set_period_size(snd_pcm_t *pcm_handle,
 
     snd_pcm_uframes_t nearest_frames = *frames;
     status = snd_pcm_hw_params_set_period_size_near(pcm_handle, hw_params_copy,
-                                                    &nearest_frames, NULL);
+                                                    &nearest_frames, nullptr);
     if (status < 0) {
         return -1;
     }
 
     unsigned int periods = 2;
     status = snd_pcm_hw_params_set_periods_near(pcm_handle, hw_params_copy,
-                                                &periods, NULL);
+                                                &periods, nullptr);
     if (status < 0) {
         return -1;
     }
@@ -396,12 +396,12 @@ static int set_period_size(snd_pcm_t *pcm_handle,
     return finalize_hw_params(pcm_handle, hw_params_copy, override, frames);
 }
 
-static int set_buffer_size(snd_pcm_t *pcm_handle,
-                           snd_pcm_hw_params_t *hw_params, bool override,
-                           u64 *frames) {
+static int set_buffer_size(snd_pcm_t* pcm_handle,
+                           snd_pcm_hw_params_t* hw_params, bool override,
+                           u64* frames) {
     int status;
 
-    snd_pcm_hw_params_t *hw_params_copy;
+    snd_pcm_hw_params_t* hw_params_copy;
     snd_pcm_hw_params_alloca(&hw_params_copy);
     snd_pcm_hw_params_copy(hw_params_copy, hw_params);
 
@@ -411,8 +411,7 @@ static int set_buffer_size(snd_pcm_t *pcm_handle,
 
     snd_pcm_uframes_t nearest_frames;
     nearest_frames = *frames * 2;
-    status = snd_pcm_hw_params_set_buffer_size_near(pcm_handle,
-                                                    hw_params_copy,
+    status = snd_pcm_hw_params_set_buffer_size_near(pcm_handle, hw_params_copy,
                                                     &nearest_frames);
     if (status < 0) {
         return -1;
@@ -422,6 +421,7 @@ static int set_buffer_size(snd_pcm_t *pcm_handle,
 }
 
 #define TEST_FORMAT_COUNT 5
+
 static Format test_formats[TEST_FORMAT_COUNT] = {
     FORMAT_F64,
     FORMAT_F32,
@@ -455,7 +455,7 @@ struct Specification {
     u8 silence;
 };
 
-static void fill_remaining_specification(Specification *specification) {
+static void fill_remaining_specification(Specification* specification) {
     switch (specification->format) {
         case FORMAT_U8:
             specification->silence = 0x80;
@@ -468,11 +468,11 @@ static void fill_remaining_specification(Specification *specification) {
                           specification->channels * specification->frames;
 }
 
-static bool open_device(const char *name, Specification *specification,
-                        snd_pcm_t **out_pcm_handle) {
+static bool open_device(const char* name, Specification* specification,
+                        snd_pcm_t** out_pcm_handle) {
     int status;
 
-    snd_pcm_t *pcm_handle;
+    snd_pcm_t* pcm_handle;
     status = snd_pcm_open(&pcm_handle, name, SND_PCM_STREAM_PLAYBACK,
                           SND_PCM_NONBLOCK);
     if (status < 0) {
@@ -482,7 +482,7 @@ static bool open_device(const char *name, Specification *specification,
     }
     *out_pcm_handle = pcm_handle;
 
-    snd_pcm_hw_params_t *hw_params;
+    snd_pcm_hw_params_t* hw_params;
     snd_pcm_hw_params_alloca(&hw_params);
     status = snd_pcm_hw_params_any(pcm_handle, hw_params);
     if (status < 0) {
@@ -531,7 +531,8 @@ static bool open_device(const char *name, Specification *specification,
     }
 
     unsigned int resample = 1;
-    status = snd_pcm_hw_params_set_rate_resample(pcm_handle, hw_params, resample);
+    status = snd_pcm_hw_params_set_rate_resample(pcm_handle, hw_params,
+                                                 resample);
     if (status < 0) {
         LOG_ERROR("Failed to enable resampling. %s", snd_strerror(status));
         return false;
@@ -539,7 +540,7 @@ static bool open_device(const char *name, Specification *specification,
 
     unsigned int rate = specification->sample_rate;
     status = snd_pcm_hw_params_set_rate_near(pcm_handle, hw_params, &rate,
-                                             NULL);
+                                             nullptr);
     if (status < 0) {
         LOG_ERROR("Couldn't set the sample rate. %s", snd_strerror(status));
         return false;
@@ -558,7 +559,7 @@ static bool open_device(const char *name, Specification *specification,
         }
     }
 
-    snd_pcm_sw_params_t *sw_params;
+    snd_pcm_sw_params_t* sw_params;
     snd_pcm_sw_params_alloca(&sw_params);
     status = snd_pcm_sw_params_current(pcm_handle, sw_params);
     if (status < 0) {
@@ -592,7 +593,7 @@ static bool open_device(const char *name, Specification *specification,
     return true;
 }
 
-static void close_device(snd_pcm_t *pcm_handle) {
+static void close_device(snd_pcm_t* pcm_handle) {
     if (pcm_handle) {
         snd_pcm_drain(pcm_handle);
         snd_pcm_close(pcm_handle);
@@ -604,33 +605,33 @@ static void close_device(snd_pcm_t *pcm_handle) {
 //     and PCM and ADPCM inside .wav files
 
 struct Stream {
-    enum DecoderType {
-        DECODER_VORBIS,
-        DECODER_WAVE,
+    enum class DecoderType {
+        Vorbis,
+        Wave,
     };
     DecoderType decoder_type;
     union {
         struct {
-            stb_vorbis *decoder;
+            stb_vorbis* decoder;
         } vorbis;
         struct {
-            WaveDecoder *decoder;
+            WaveDecoder* decoder;
         } wave;
     };
     int channels;
-    float *decoded_samples;
+    float* decoded_samples;
     float volume;
     bool looping;
     StreamId id;
 };
 
-static Stream::DecoderType decoder_type_from_file_extension(const char *extension) {
-         if (strings_match(extension, "wav")) return Stream::DECODER_WAVE;
-    else if (strings_match(extension, "ogg")) return Stream::DECODER_VORBIS;
-    return Stream::DECODER_WAVE;
+static Stream::DecoderType decoder_type_from_file_extension(const char* extension) {
+         if (strings_match(extension, "wav")) return Stream::DecoderType::Wave;
+    else if (strings_match(extension, "ogg")) return Stream::DecoderType::Vorbis;
+    return Stream::DecoderType::Wave;
 }
 
-static void fill_with_silence(float *samples, u8 silence, u64 count) {
+static void fill_with_silence(float* samples, u8 silence, u64 count) {
     std::memset(samples, silence, sizeof(float) * count);
 }
 
@@ -641,22 +642,23 @@ struct StreamManager {
     int stream_count;
 };
 
-static void initialise_stream_manager(StreamManager *stream_manager) {
+static void initialise_stream_manager(StreamManager* stream_manager) {
     std::memset(stream_manager, 0, sizeof *stream_manager);
 }
 
-static int close_stream(StreamManager *manager, int stream_index) {
+static int close_stream(StreamManager* manager, int stream_index) {
     assert(stream_index >= 0 && stream_index < manager->stream_count);
 
-    Stream *stream = manager->streams + stream_index;
+    Stream* stream = manager->streams + stream_index;
     switch (stream->decoder_type) {
-        case Stream::DECODER_VORBIS: {
+        case Stream::DecoderType::Vorbis: {
             stb_vorbis_close(stream->vorbis.decoder);
-        } break;
-
-        case Stream::DECODER_WAVE: {
+            break;
+        }
+        case Stream::DecoderType::Wave: {
             wave_close_file(stream->wave.decoder);
-        } break;
+            break;
+        }
     }
     DEALLOCATE_ARRAY(stream->decoded_samples);
 
@@ -669,27 +671,28 @@ static int close_stream(StreamManager *manager, int stream_index) {
     return stream_index - 1;
 }
 
-static void close_stream_by_id(StreamManager *manager, StreamId stream_id) {
+static void close_stream_by_id(StreamManager* manager, StreamId stream_id) {
     FOR_N(i, manager->stream_count) {
-        Stream *stream = manager->streams + i;
+        Stream* stream = manager->streams + i;
         if (stream->id == stream_id) {
             i = close_stream(manager, i);
         }
     }
 }
 
-static void close_all_streams(StreamManager *stream_manager) {
+static void close_all_streams(StreamManager* stream_manager) {
     FOR_N(i, stream_manager->stream_count) {
         close_stream(stream_manager, i);
     }
 }
 
-static void open_stream(StreamManager *stream_manager, const char *filename,
+static void open_stream(StreamManager* stream_manager, const char* filename,
                         u64 samples_to_decode, float volume, bool looping,
                         StreamId id = 0) {
-    Stream *stream = stream_manager->streams + stream_manager->stream_count;
 
-    const char *file_extension = std::strstr(filename, ".") + 1;
+    Stream* stream = stream_manager->streams + stream_manager->stream_count;
+
+    const char* file_extension = std::strstr(filename, ".") + 1;
     stream->decoder_type = decoder_type_from_file_extension(file_extension);
 
     char path[256];
@@ -697,10 +700,10 @@ static void open_stream(StreamManager *stream_manager, const char *filename,
     concatenate(path, filename, sizeof path);
 
     switch (stream->decoder_type) {
-        case Stream::DECODER_VORBIS: {
-            stb_vorbis *decoder;
+        case Stream::DecoderType::Vorbis: {
+            stb_vorbis* decoder;
             int open_error = 0;
-            decoder = stb_vorbis_open_filename(path, &open_error, NULL);
+            decoder = stb_vorbis_open_filename(path, &open_error, nullptr);
             if (!decoder || open_error) {
                 LOG_ERROR("Vorbis file %s failed to load: %i", path,
                           open_error);
@@ -709,17 +712,18 @@ static void open_stream(StreamManager *stream_manager, const char *filename,
 
             stb_vorbis_info info = stb_vorbis_get_info(stream->vorbis.decoder);
             stream->channels = info.channels;
-        } break;
-
-        case Stream::DECODER_WAVE: {
-            WaveDecoder *decoder;
+            break;
+        }
+        case Stream::DecoderType::Wave: {
+            WaveDecoder* decoder;
             decoder = wave_open_file(path);
             if (!decoder) {
                 LOG_ERROR("Wave file %s failed to load.", path);
             }
             stream->wave.decoder = decoder;
             stream->channels = wave_channels(decoder);
-        } break;
+            break;
+        }
     }
 
     stream->decoded_samples = ALLOCATE_ARRAY(float, samples_to_decode);
@@ -729,13 +733,13 @@ static void open_stream(StreamManager *stream_manager, const char *filename,
     stream_manager->stream_count += 1;
 }
 
-static void decode_streams(StreamManager *stream_manager, int frames) {
+static void decode_streams(StreamManager* stream_manager, int frames) {
     FOR_N(i, stream_manager->stream_count) {
-        Stream *stream = stream_manager->streams + i;
+        Stream* stream = stream_manager->streams + i;
         int channels = stream->channels;
         int samples_to_decode = channels * frames;
         switch (stream->decoder_type) {
-            case Stream::DECODER_VORBIS: {
+            case Stream::DecoderType::Vorbis: {
                 int frames_decoded = stb_vorbis_get_samples_float_interleaved(stream->vorbis.decoder, channels, stream->decoded_samples, samples_to_decode);
                 if (frames_decoded < frames) {
                     if (stream->looping) {
@@ -748,9 +752,9 @@ static void decode_streams(StreamManager *stream_manager, int frames) {
                         i = close_stream(stream_manager, i);
                     }
                 }
-            } break;
-
-            case Stream::DECODER_WAVE: {
+                break;
+            }
+            case Stream::DecoderType::Wave: {
                 int frames_decoded = wave_decode_interleaved(stream->wave.decoder, channels, stream->decoded_samples, samples_to_decode);
                 if (frames_decoded < frames) {
                     if (stream->looping) {
@@ -763,7 +767,8 @@ static void decode_streams(StreamManager *stream_manager, int frames) {
                         i = close_stream(stream_manager, i);
                     }
                 }
-            } break;
+                break;
+            }
         }
     }
 }
@@ -772,13 +777,13 @@ static float clamp(float x, float min, float max) {
     return (x < min) ? min : (x > max) ? max : x;
 }
 
-static void mix_streams(StreamManager *stream_manager, float *mix_buffer,
+static void mix_streams(StreamManager* stream_manager, float* mix_buffer,
                         int frames, int channels) {
     int samples = frames * channels;
 
     // Mix the streams' samples into the given buffer.
     FOR_N(i, stream_manager->stream_count) {
-        Stream *stream = stream_manager->streams + i;
+        Stream* stream = stream_manager->streams + i;
         if (channels < stream->channels) {
             FOR_N(j, frames) {
                 FOR_N(k, channels) {
@@ -809,10 +814,10 @@ static void mix_streams(StreamManager *stream_manager, float *mix_buffer,
 // Message Queue...............................................................
 
 struct Message {
-    enum Code {
-        PLAY_ONCE,
-        START_STREAM,
-        STOP_STREAM,
+    enum class Code {
+        Play_Once,
+        Start_Stream,
+        Stop_Stream,
     } code;
     union {
         struct {
@@ -840,17 +845,17 @@ struct MessageQueue {
     AtomicInt tail;
 };
 
-static bool was_empty(MessageQueue *queue) {
+static bool was_empty(MessageQueue* queue) {
     return atomic_int_load(&queue->head) == atomic_int_load(&queue->tail);
 }
 
-static bool was_full(MessageQueue *queue) {
+static bool was_full(MessageQueue* queue) {
     int next_tail = atomic_int_load(&queue->tail);
     next_tail = (next_tail + 1) % MAX_MESSAGES;
     return next_tail == atomic_int_load(&queue->head);
 }
 
-static bool enqueue_message(MessageQueue *queue, Message *message) {
+static bool enqueue_message(MessageQueue* queue, Message* message) {
     int current_tail = atomic_int_load(&queue->tail);
     int next_tail = (current_tail + 1) % MAX_MESSAGES;
     if (next_tail != atomic_int_load(&queue->head)) {
@@ -861,7 +866,7 @@ static bool enqueue_message(MessageQueue *queue, Message *message) {
     return false;
 }
 
-static bool dequeue_message(MessageQueue *queue, Message *message) {
+static bool dequeue_message(MessageQueue* queue, Message* message) {
     int current_head = atomic_int_load(&queue->head);
     if (current_head == atomic_int_load(&queue->tail)) {
         return false;
@@ -878,17 +883,17 @@ struct System {
     MessageQueue message_queue;
     ConversionInfo conversion_info;
     Specification specification;
-    snd_pcm_t *pcm_handle;
-    float *mixed_samples;
-    void *devicebound_samples;
+    snd_pcm_t* pcm_handle;
+    float* mixed_samples;
+    void* devicebound_samples;
     pthread_t thread;
     AtomicFlag quit;
     double time;
     StreamId stream_id_seed;
 };
 
-static void *run_mixer_thread(void *argument) {
-    System *system = static_cast<System *>(argument);
+static void* run_mixer_thread(void* argument) {
+    System* system = static_cast<System*>(argument);
 
     Specification specification;
     specification.channels = 2;
@@ -928,23 +933,24 @@ static void *run_mixer_thread(void *argument) {
             Message message;
             while (dequeue_message(&system->message_queue, &message)) {
                 switch (message.code) {
-                    case Message::PLAY_ONCE: {
+                    case Message::Code::Play_Once: {
                         open_stream(&system->stream_manager,
                                     message.play_once.filename, samples,
                                     message.play_once.volume, false);
-                    } break;
-
-                    case Message::START_STREAM: {
+                        break;
+                    }
+                    case Message::Code::Start_Stream: {
                         open_stream(&system->stream_manager,
                                     message.start_stream.filename, samples,
                                     message.start_stream.volume, true,
                                     message.start_stream.stream_id);
-                    } break;
-
-                    case Message::STOP_STREAM: {
+                        break;
+                    }
+                    case Message::Code::Stop_Stream: {
                         close_stream_by_id(&system->stream_manager,
                                            message.stop_stream.stream_id);
-                    } break;
+                        break;
+                    }
                 }
             }
         }
@@ -963,7 +969,7 @@ static void *run_mixer_thread(void *argument) {
             LOG_ERROR("ALSA device waiting timed out!");
         }
 
-        u8 *buffer = static_cast<u8 *>(system->devicebound_samples);
+        u8* buffer = static_cast<u8*>(system->devicebound_samples);
         snd_pcm_uframes_t frames_left = system->specification.frames;
         while (frames_left > 0) {
             int frames_written = snd_pcm_writei(system->pcm_handle, buffer,
@@ -997,42 +1003,44 @@ static void *run_mixer_thread(void *argument) {
     DEALLOCATE_ARRAY(system->mixed_samples);
     DEALLOCATE_ARRAY(system->devicebound_samples);
 
-    return NULL;
+    return nullptr;
 }
 
-System *startup() {
-    System *system = ALLOCATE_STRUCT(System);
+System* startup() {
+    System* system;
+
+    system = ALLOCATE_STRUCT(System);
     if (!system) {
         LOG_ERROR("Failed to allocate memory for the audio system.");
-        return NULL;
+        return nullptr;
     }
     CLEAR_STRUCT(system);
 
     atomic_flag_test_and_set(&system->quit);
-    pthread_create(&system->thread, NULL, run_mixer_thread, system);
+    pthread_create(&system->thread, nullptr, run_mixer_thread, system);
 
     return system;
 }
 
-void shutdown(System *system) {
+void shutdown(System* system) {
     // Signal the mixer thread to quit and wait here for it to finish.
     atomic_flag_clear(&system->quit);
-    pthread_join(system->thread, NULL);
+    pthread_join(system->thread, nullptr);
 
     // Destroy the system.
     DEALLOCATE_STRUCT(system);
 }
 
-void play_once(System *system, const char *filename, float volume) {
+void play_once(System* system, const char* filename, float volume) {
     Message message;
-    message.code = Message::PLAY_ONCE;
+    message.code = Message::Code::Play_Once;
     copy_string(message.play_once.filename, filename,
                 sizeof message.play_once.filename);
     message.play_once.volume = volume;
     enqueue_message(&system->message_queue, &message);
 }
 
-static StreamId generate_stream_id(System *system) {
+static StreamId generate_stream_id(System* system) {
     system->stream_id_seed += 1;
     if (system->stream_id_seed == 0) {
         // Reserve stream ids of 0 for streams that don't need to be
@@ -1042,12 +1050,12 @@ static StreamId generate_stream_id(System *system) {
     return system->stream_id_seed;
 }
 
-void start_stream(System *system, const char *filename, float volume,
-                  StreamId *out_stream_id) {
+void start_stream(System* system, const char* filename, float volume,
+                  StreamId* out_stream_id) {
     StreamId stream_id = generate_stream_id(system);
 
     Message message;
-    message.code = Message::START_STREAM;
+    message.code = Message::Code::Start_Stream;
     copy_string(message.start_stream.filename, filename,
                 sizeof message.start_stream.filename);
     message.start_stream.stream_id = stream_id;
@@ -1057,9 +1065,9 @@ void start_stream(System *system, const char *filename, float volume,
     *out_stream_id = stream_id;
 }
 
-void stop_stream(System *system, StreamId stream_id) {
+void stop_stream(System* system, StreamId stream_id) {
     Message message;
-    message.code = Message::STOP_STREAM;
+    message.code = Message::Code::Stop_Stream;
     message.stop_stream.stream_id = stream_id;
     enqueue_message(&system->message_queue, &message);
 }

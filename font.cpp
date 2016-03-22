@@ -6,28 +6,28 @@
 #include <cassert>
 
 #define ALLOCATE(type, count) \
-    static_cast<type *>(std::malloc(sizeof(type) * (count)))
+    static_cast<type*>(std::malloc(sizeof(type) * (count)))
 
 #define DEALLOCATE(memory) \
     std::free(memory)
 
-/* Text File Reader Functions................................................*/
+// Text File Reader Functions..................................................
 
 struct Reader {
-    char *current;
+    char* current;
     bool read_error;
 };
 
-static void seek_in_line(Reader *reader, const char *target) {
+static void seek_in_line(Reader* reader, const char* target) {
     reader->current = std::strstr(reader->current, target);
 }
 
-static void seek_next_line(Reader *reader) {
+static void seek_next_line(Reader* reader) {
     reader->current = std::strchr(reader->current, '\n');
 }
 
-static int get_integer(Reader *reader, const char *tag) {
-    char *attribute = std::strstr(reader->current, tag);
+static int get_integer(Reader* reader, const char* tag) {
+    char* attribute = std::strstr(reader->current, tag);
     if (!attribute) {
         reader->read_error = true;
         return 0;
@@ -36,8 +36,8 @@ static int get_integer(Reader *reader, const char *tag) {
     return std::atoi(attribute);
 }
 
-static void seek_to_attribute(Reader *reader, const char *tag) {
-    char *attribute = std::strstr(reader->current, tag);
+static void seek_to_attribute(Reader* reader, const char* tag) {
+    char* attribute = std::strstr(reader->current, tag);
     if (!attribute) {
         reader->read_error = true;
     } else {
@@ -46,18 +46,18 @@ static void seek_to_attribute(Reader *reader, const char *tag) {
     }
 }
 
-static std::size_t get_attribute_size(Reader *reader) {
+static std::size_t get_attribute_size(Reader* reader) {
     return std::strcspn(reader->current, " \n");
 }
 
-/* BmFont Functions..........................................................*/
+// BmFont Functions............................................................
 
-bool bm_font_load(BmFont *font, const char *filename) {
+bool bm_font_load(BmFont* font, const char* filename) {
     font->tracking = 0;
 
-    /* Fetch the whole .fnt file and copy the contents into memory. */
+    // Fetch the whole .fnt file and copy the contents into memory.
 
-    std::FILE *file = std::fopen(filename, "r");
+    std::FILE* file = std::fopen(filename, "r");
     if (!file) {
         return false;
     }
@@ -66,7 +66,7 @@ bool bm_font_load(BmFont *font, const char *filename) {
     long int total_bytes = std::ftell(file);
     std::fseek(file, 0, SEEK_SET);
 
-    char *data = ALLOCATE(char, total_bytes + 1);
+    char* data = ALLOCATE(char, total_bytes + 1);
     if (!data) {
         std::fclose(file);
         return false;
@@ -83,12 +83,12 @@ bool bm_font_load(BmFont *font, const char *filename) {
     Reader reader = {};
     reader.current = data;
 
-    /* Info section */
+    // Info section
     seek_in_line(&reader, "info");
     font->size = get_integer(&reader, "size");
     seek_next_line(&reader);
 
-    /* Common section */
+    // Common section
     seek_in_line(&reader, "common");
     font->baseline = get_integer(&reader, "base");
     font->leading = get_integer(&reader, "lineHeight");
@@ -101,7 +101,7 @@ bool bm_font_load(BmFont *font, const char *filename) {
     }
     seek_next_line(&reader);
 
-    /* Page section */
+    // Page section
     assert(num_pages == 1);
     seek_in_line(&reader, "page");
     seek_to_attribute(&reader, "file");
@@ -116,7 +116,7 @@ bool bm_font_load(BmFont *font, const char *filename) {
     font->image.filename[filename_size - 1] = '\0';
     seek_next_line(&reader);
 
-    /* Char section */
+    // Char section
     seek_in_line(&reader, "chars");
     int num_chars = get_integer(&reader, "count");
     font->num_glyphs = num_chars;
@@ -127,7 +127,7 @@ bool bm_font_load(BmFont *font, const char *filename) {
     for (int i = 0; i < num_chars; ++i) {
         seek_in_line(&reader, "char");
         font->character_map[i] = get_integer(&reader, "id");
-        BmFont::Glyph *glyph = font->glyphs + i;
+        BmFont::Glyph* glyph = font->glyphs + i;
         glyph->texcoord.left = get_integer(&reader, "x");
         glyph->texcoord.top = get_integer(&reader, "y");
         glyph->texcoord.width = get_integer(&reader, "width");
@@ -138,7 +138,7 @@ bool bm_font_load(BmFont *font, const char *filename) {
         seek_next_line(&reader);
     }
 
-    /* Kerning section */
+    // Kerning section
     seek_in_line(&reader, "kernings");
     int num_kerning_pairs = get_integer(&reader, "count");
     font->num_kerning_pairs = num_kerning_pairs;
@@ -147,15 +147,15 @@ bool bm_font_load(BmFont *font, const char *filename) {
 
     for (int i = 0; i < num_kerning_pairs; ++i) {
         seek_in_line(&reader, "kerning");
-        BmFont::KerningPair *pair = font->kerning_table + i;
+        BmFont::KerningPair* pair = font->kerning_table + i;
         pair->first = get_integer(&reader, "first");
         pair->second = get_integer(&reader, "second");
         pair->amount = get_integer(&reader, "amount");
         seek_next_line(&reader);
     }
 
-    /* Deallocate the file data and do one last check to see if there were
-       errors before returning that the loading succeeded. */
+    // Deallocate the file data and do one last check to see if there were
+    // errors before returning that the loading succeeded.
 
     DEALLOCATE(data);
 
@@ -166,16 +166,16 @@ bool bm_font_load(BmFont *font, const char *filename) {
     return true;
 }
 
-void bm_font_unload(BmFont *font) {
+void bm_font_unload(BmFont* font) {
     DEALLOCATE(font->kerning_table);
     DEALLOCATE(font->glyphs);
     DEALLOCATE(font->character_map);
     DEALLOCATE(font->image.filename);
 }
 
-/* Font usage functions......................................................*/
+// Font usage functions........................................................
 
-BmFont::Glyph *bm_font_get_character_mapping(BmFont *font, char32_t c) {
+BmFont::Glyph* bm_font_get_character_mapping(BmFont* font, char32_t c) {
     for (int i = 0; i < font->num_glyphs; ++i) {
         if (font->character_map[i] == c) {
             return font->glyphs + i;
@@ -184,7 +184,7 @@ BmFont::Glyph *bm_font_get_character_mapping(BmFont *font, char32_t c) {
     return font->glyphs;
 }
 
-int bm_font_get_kerning(BmFont *font, char32_t first, char32_t second) {
+int bm_font_get_kerning(BmFont* font, char32_t first, char32_t second) {
     for (int i = 0; i < font->num_kerning_pairs; ++i) {
         if (font->kerning_table[i].first == first &&
             font->kerning_table[i].second == second) {

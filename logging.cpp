@@ -5,7 +5,7 @@
 
 namespace logging {
 
-void add_message(Level level, const char *format, ...) {
+void add_message(Level level, const char* format, ...) {
     va_list arguments;
     va_start(arguments, format);
     std::vprintf(format, arguments);

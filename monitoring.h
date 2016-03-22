@@ -1,5 +1,4 @@
-#ifndef MONITORING_H_
-#define MONITORING_H_
+#pragma once
 
 #include <cstdint>
 
@@ -11,14 +10,14 @@ struct Timer {
 
 bool startup();
 void shutdown();
-void begin_period(Timer *timer);
-void end_period(Timer *timer, const char *period_name);
+void begin_period(Timer* timer);
+void end_period(Timer* timer, const char* period_name);
 void flush_readings();
 
 void lock();
 void unlock();
 void sort_readings();
-const char *pull_reading();
+const char* pull_reading();
 
 } // namespace monitoring
 
@@ -28,5 +27,3 @@ const char *pull_reading();
 
 #define END_MONITORING(period_name) \
     monitoring::end_period(&timer_##period_name, #period_name)
-
-#endif /* MONITORING_H_ */

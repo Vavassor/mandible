@@ -29,28 +29,28 @@
 #endif
 
 #define ARRAY_COUNT(a) \
-    ((sizeof(a) / sizeof(*(a))) / static_cast<size_t>(!(sizeof(a) % sizeof(*(a)))))
+    ((sizeof(a) / sizeof(*(a))) / static_cast<std::size_t>(!(sizeof(a) % sizeof(*(a)))))
 
 #define FOR_N(index, n) \
     for (auto (index) = 0; (index) < (n); ++(index))
 
 #define ALLOCATE_ARRAY(type, count) \
-    static_cast<type *>(std::malloc(sizeof(type) * (count)))
+    static_cast<type*>(std::malloc(sizeof(type) * (count)))
 
 #define ALLOCATE_STRUCT(type) \
-    static_cast<type *>(std::malloc(sizeof(type)))
+    static_cast<type*>(std::malloc(sizeof(type)))
 
 #define DEALLOCATE(a) \
     std::free(a)
 
 struct Atlas {
-    u8 *data;
+    u8* data;
     int width;
     int height;
     int bytes_per_pixel;
 };
 
-static void load_atlas(Atlas *atlas, const char *name) {
+static void load_atlas(Atlas* atlas, const char* name) {
     char path[256];
     copy_string(path, "Assets/", sizeof path);
     concatenate(path, name, sizeof path);
@@ -58,42 +58,42 @@ static void load_atlas(Atlas *atlas, const char *name) {
                             &atlas->bytes_per_pixel, 0);
 }
 
-static void unload_atlas(Atlas *atlas) {
+static void unload_atlas(Atlas* atlas) {
     stbi_image_free(atlas->data);
 }
 
 struct Image {
-    u8 *data;
+    u8* data;
     int width;
     int height;
     int bytes_per_pixel;
 };
 
-static void load_image(Image *image, const char *name) {
+static void load_image(Image* image, const char* name) {
     image->data = stbi_load(name, &image->width, &image->height,
                             &image->bytes_per_pixel, 0);
 }
 
-static void unload_image(Image *image) {
+static void unload_image(Image* image) {
     stbi_image_free(image->data);
 }
 
 // Canvas Functions............................................................
 
 struct Canvas {
-    u16 *buffer;
+    u16* buffer;
     int width;
     int height;
 };
 
-static bool canvas_create(Canvas *canvas, int width, int height) {
+static bool canvas_create(Canvas* canvas, int width, int height) {
     canvas->width = width;
     canvas->height = height;
     canvas->buffer = ALLOCATE_ARRAY(u16, width * height);
     return canvas->buffer;
 }
 
-static void canvas_destroy(Canvas *canvas) {
+static void canvas_destroy(Canvas* canvas) {
     if (canvas->buffer) {
         DEALLOCATE(canvas->buffer);
     }
@@ -110,13 +110,13 @@ static void canvas_destroy(Canvas *canvas) {
     (((x) & 0x3E0) << 6) | \
     (((x) & 0x7C00) << 9))
 
-static inline void set_pixel(Canvas *canvas, int x, int y, u16 value) {
+static inline void set_pixel(Canvas* canvas, int x, int y, u16 value) {
     assert(x >= 0 && x < canvas->width);
     assert(y >= 0 && y < canvas->height);
     canvas->buffer[y * canvas->width + x] = value;
 }
 
-static void canvas_fill(Canvas *canvas, u32 colour) {
+static void canvas_fill(Canvas* canvas, u32 colour) {
     int pixel_count = canvas->width * canvas->height;
     u16 colour16 = PACK16(colour);
     for (int i = 0; i < pixel_count; ++i) {
@@ -128,7 +128,7 @@ static int mod(int x, int m) {
     return (x % m + m) % m;
 }
 
-static void draw_rectangle(Canvas *canvas, Atlas *atlas, int cx, int cy,
+static void draw_rectangle(Canvas* canvas, Atlas* atlas, int cx, int cy,
                            int tx, int ty, int width, int height) {
     if (cx < 0) {
         tx -= cx;
@@ -161,7 +161,7 @@ static void draw_rectangle(Canvas *canvas, Atlas *atlas, int cx, int cy,
             int atlas_x = mod(tx + x, atlas->width);
             int atlas_y = mod(ty + y, atlas->height);
             int ai = atlas_y * atlas->width + atlas_x;
-            u32 c = reinterpret_cast<u32 *>(atlas->data)[ai];
+            u32 c = reinterpret_cast<u32*>(atlas->data)[ai];
             if (c & 0xFF000000) {
                 set_pixel(canvas, cx + x, cy + y, PACK16(c));
             }
@@ -169,7 +169,7 @@ static void draw_rectangle(Canvas *canvas, Atlas *atlas, int cx, int cy,
     }
 }
 
-static int clip_test(int q, int p, double *te, double *tl) {
+static int clip_test(int q, int p, double* te, double* tl) {
     if (p == 0) {
         return q < 0;
     }
@@ -196,7 +196,7 @@ static int sign(int x) {
     return (x > 0) - (x < 0);
 }
 
-static void draw_line(Canvas *canvas, int x1, int y1, int x2, int y2,
+static void draw_line(Canvas* canvas, int x1, int y1, int x2, int y2,
                       u32 colour) {
 
     // Clip the line to the canvas rectangle.
@@ -273,7 +273,7 @@ static void draw_line(Canvas *canvas, int x1, int y1, int x2, int y2,
 
 // @Unused
 #if 0
-static void scale_whole_canvas(Canvas *to, Canvas* from, int scale) {
+static void scale_whole_canvas(Canvas* to, Canvas* from, int scale) {
     int w = scale * from->width;
     int h = scale * from->height;
     for (int y = 0; y < h; ++y) {
@@ -344,10 +344,10 @@ static bool is_line_break(char32_t codepoint) {
 }
 
 #define STACK_ALLOCATE_ARRAY(count, type) \
-    static_cast<type *>(alloca(sizeof(type) * (count)))
+    static_cast<type*>(alloca(sizeof(type) * (count)))
 
-static void draw_text(Canvas *canvas, Atlas *atlas, BmFont *font,
-                      const char *text, int cx, int cy) {
+static void draw_text(Canvas* canvas, Atlas* atlas, BmFont* font,
+                      const char* text, int cx, int cy) {
 
     int char_count = string_size(text);
     int codepoint_count = utf8_codepoint_count(text);
@@ -361,7 +361,7 @@ static void draw_text(Canvas *canvas, Atlas *atlas, BmFont *font,
     char32_t prior_char = 0x0;
     for (int i = 0; i < char_count; ++i) {
         char32_t c = text[i];
-        BmFont::Glyph *glyph = bm_font_get_character_mapping(font, c);
+        BmFont::Glyph* glyph = bm_font_get_character_mapping(font, c);
 
         if (is_line_break(c)) {
             pen.x = cx;
@@ -390,12 +390,12 @@ static void draw_text(Canvas *canvas, Atlas *atlas, BmFont *font,
 // Framebuffer Functions.......................................................
 
 struct Framebuffer {
-    u32 *pixels;
+    u32* pixels;
     int width;
     int height;
 };
 
-static bool framebuffer_create(Framebuffer *framebuffer,
+static bool framebuffer_create(Framebuffer* framebuffer,
                                int width, int height) {
     framebuffer->width = width;
     framebuffer->height = height;
@@ -403,7 +403,7 @@ static bool framebuffer_create(Framebuffer *framebuffer,
     return framebuffer->pixels;
 }
 
-static void framebuffer_destroy(Framebuffer *framebuffer) {
+static void framebuffer_destroy(Framebuffer* framebuffer) {
     if (framebuffer->pixels) {
         DEALLOCATE(framebuffer->pixels);
     }
@@ -428,30 +428,30 @@ struct Clock {
     double frequency;
 };
 
-static void initialise_clock(Clock *clock) {
+static void initialise_clock(Clock* clock) {
     timespec resolution;
     clock_getres(CLOCK_MONOTONIC, &resolution);
     s64 nanoseconds = resolution.tv_nsec + resolution.tv_sec * 1e9;
     clock->frequency = static_cast<double>(nanoseconds) / 1.0e9;
 }
 
-static double get_time(Clock *clock) {
+static double get_time(Clock* clock) {
     timespec timestamp;
     clock_gettime(CLOCK_MONOTONIC, &timestamp);
     s64 nanoseconds = timestamp.tv_nsec + timestamp.tv_sec * 1e9;
     return static_cast<double>(nanoseconds) * clock->frequency;
 }
 
-static void go_to_sleep(Clock *clock, double amount_to_sleep) {
+static void go_to_sleep(Clock* clock, double amount_to_sleep) {
     timespec requested_time;
     requested_time.tv_sec = 0;
     requested_time.tv_nsec = static_cast<s64>(1.0e9 * amount_to_sleep);
-    clock_nanosleep(CLOCK_MONOTONIC, 0, &requested_time, NULL);
+    clock_nanosleep(CLOCK_MONOTONIC, 0, &requested_time, nullptr);
 }
 
 // Icon Loading Functions......................................................
 
-static void swap_red_and_blue_in_place(u32 *pixels, int pixel_count) {
+static void swap_red_and_blue_in_place(u32* pixels, int pixel_count) {
     for (int i = 0; i < pixel_count; ++i) {
         pixels[i] = (pixels[i] & 0xFF00FF00) |
                     (pixels[i] & 0xFF0000) >> 16 |
@@ -459,7 +459,7 @@ static void swap_red_and_blue_in_place(u32 *pixels, int pixel_count) {
     }
 }
 
-static void swap_red_and_blue(unsigned long *out, const u32 *in, int pixel_count) {
+static void swap_red_and_blue(unsigned long* out, u32* in, int pixel_count) {
     for (int i = 0; i < pixel_count; ++i) {
         out[i] = (in[i] & 0xFF00FF00) |
                  (in[i] & 0xFF0000) >> 16 |
@@ -467,29 +467,29 @@ static void swap_red_and_blue(unsigned long *out, const u32 *in, int pixel_count
     }
 }
 
-static bool load_pixmap(Pixmap *out_pixmap, Display *display,
-                        const char *name) {
+static bool load_pixmap(Pixmap* out_pixmap, Display* display,
+                        const char* name) {
     int width;
     int height;
     int bytes_per_pixel;
-    u8 *pixel_data = stbi_load(name, &width, &height, &bytes_per_pixel, 0);
+    u8* pixel_data = stbi_load(name, &width, &height, &bytes_per_pixel, 0);
     if (!pixel_data) {
         return false;
     }
 
-    swap_red_and_blue_in_place(reinterpret_cast<u32 *>(pixel_data),
+    swap_red_and_blue_in_place(reinterpret_cast<u32*>(pixel_data),
                                width * height);
 
-    XImage *image;
+    XImage* image;
     int depth = 8 * bytes_per_pixel;
     int bitmap_pad; // XCreateImage only accepts values of 8, 16, or 32
     switch (depth) {
-        case 8: bitmap_pad = 8; break;
+        case 8:  bitmap_pad = 8;  break;
         case 16: bitmap_pad = 16; break;
         default: bitmap_pad = 32; break;
     }
     image = XCreateImage(display, CopyFromParent, depth, ZPixmap, 0,
-                         reinterpret_cast<char *>(pixel_data),
+                         reinterpret_cast<char*>(pixel_data),
                          width, height, bitmap_pad, 0);
     if (!image) {
         stbi_image_free(pixel_data);
@@ -498,7 +498,7 @@ static bool load_pixmap(Pixmap *out_pixmap, Display *display,
 
     Pixmap pixmap = XCreatePixmap(display, DefaultRootWindow(display),
                                   width, height, depth);
-    GC graphics_context = XCreateGC(display, pixmap, 0, NULL);
+    GC graphics_context = XCreateGC(display, pixmap, 0, nullptr);
     XPutImage(display, pixmap, graphics_context, image,
               0, 0, 0, 0, width, height);
     XFreeGC(display, graphics_context);
@@ -513,26 +513,27 @@ static bool load_pixmap(Pixmap *out_pixmap, Display *display,
     return true;
 }
 
-static void unload_pixmap(Display *display, Pixmap pixmap) {
+static void unload_pixmap(Display* display, Pixmap pixmap) {
     XFreePixmap(display, pixmap);
 }
 
-static void set_icons(Display *display, Window window, Atom net_wm_icon,
-                      Atom cardinal, Image *icons, int icon_count) {
+static void set_icons(Display* display, Window window, Atom net_wm_icon,
+                      Atom cardinal, Image* icons, int icon_count) {
+
     int total_pixels = 0;
     for (int i = 0; i < icon_count; ++i) {
         total_pixels += 2 + icons[i].width * icons[i].height;
     }
 
-    unsigned long *icon_buffer;
+    unsigned long* icon_buffer;
     std::size_t total_size = sizeof(unsigned long) * total_pixels;
-    icon_buffer = static_cast<unsigned long *>(std::malloc(total_size));
-    unsigned long *buffer = icon_buffer;
+    icon_buffer = static_cast<unsigned long*>(std::malloc(total_size));
+    unsigned long* buffer = icon_buffer;
     for (int i = 0; i < icon_count; ++i) {
         *buffer++ = icons[i].width;
         *buffer++ = icons[i].height;
         int pixel_count = icons[i].width * icons[i].height;
-        u32 *data = reinterpret_cast<u32 *>(icons[i].data);
+        u32* data = reinterpret_cast<u32*>(icons[i].data);
         swap_red_and_blue(buffer, data, pixel_count);
         buffer += pixel_count;
     }
@@ -541,32 +542,32 @@ static void set_icons(Display *display, Window window, Atom net_wm_icon,
     // a format value of 32, EVEN IF the size of a long is not 32-bits.
     XChangeProperty(display, window, net_wm_icon, cardinal, 32,
                     PropModeReplace,
-                    reinterpret_cast<const unsigned char *>(icon_buffer),
+                    reinterpret_cast<const unsigned char*>(icon_buffer),
                     total_pixels);
 
     std::free(icon_buffer);
 }
 
-static int error_handler(Display *display, XErrorEvent *event) {
+static int error_handler(Display* display, XErrorEvent* event) {
     char text[128];
     XGetErrorText(display, event->error_code, text, sizeof text);
     LOG_ERROR("%s", text);
     return 0;
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
     const int canvas_width = 256;
     const int canvas_height = 240;
-    const char *title = "mandible";
+    const char* title = "mandible";
     const double frame_frequency = 1.0 / 60.0;
-    const char *icon_names[] = {
+    const char* icon_names[] = {
         "Icon.png",
     };
 
     bool vertical_synchronization = true;
     bool show_monitoring_overlay = false;
 
-    Display *display; // the connection to the X server
+    Display* display; // the connection to the X server
     Colormap colormap;
     Window window;
     Atom wm_delete_window;
@@ -575,13 +576,13 @@ int main(int argc, char *argv[]) {
     Atom net_wm_icon_name;
     Atom net_wm_icon;
     Atom cardinal;
-    XSizeHints *size_hints;
-    XWMHints *wm_hints;
+    XSizeHints* size_hints;
+    XWMHints* wm_hints;
     Pixmap icccm_icon;
     GLXContext rendering_context;
-    snes_ntsc_t *ntsc_scaler;
-    input::System *input_system;
-    audio::System *audio_system;
+    snes_ntsc_t* ntsc_scaler;
+    input::System* input_system;
+    audio::System* audio_system;
     Clock clock;
     Canvas canvas;
     Framebuffer wide_framebuffer;
@@ -594,7 +595,7 @@ int main(int argc, char *argv[]) {
     XSetErrorHandler(error_handler);
 
     // Connect to the X server
-    display = XOpenDisplay(NULL);
+    display = XOpenDisplay(nullptr);
     if (!display) {
         LOG_ERROR("Cannot connect to X server");
         return EXIT_FAILURE;
@@ -611,7 +612,7 @@ int main(int argc, char *argv[]) {
     GLint visual_attributes[] = {
         GLX_RGBA, GLX_DEPTH_SIZE, 24, GLX_DOUBLEBUFFER, None
     };
-    XVisualInfo *visual = glXChooseVisual(display, DefaultScreen(display),
+    XVisualInfo* visual = glXChooseVisual(display, DefaultScreen(display),
                                           visual_attributes);
     if (!visual) {
         LOG_ERROR("Wasn't able to choose an appropriate Visual type given the"
@@ -707,7 +708,7 @@ int main(int argc, char *argv[]) {
 
     // Create the rendering context for OpenGL. The rendering context can only
     // be "made current" after the window is mapped (with XMapWindow).
-    rendering_context = glXCreateContext(display, visual, NULL, True);
+    rendering_context = glXCreateContext(display, visual, nullptr, True);
     if (!rendering_context) {
         LOG_ERROR("Couldn't create a GLX rendering context.");
     }
@@ -787,7 +788,7 @@ int main(int argc, char *argv[]) {
         {
             static float position_x = 0.0f;
             static float position_y = 0.0f;
-            input::Controller *controller = input::get_controller(input_system);
+            input::Controller* controller = input::get_controller(input_system);
             position_x += 0.9f * input::get_axis(controller, input::USER_AXIS_HORIZONTAL);
             position_y -= 0.9f * input::get_axis(controller, input::USER_AXIS_VERTICAL);
             int x = position_x;
@@ -805,7 +806,7 @@ int main(int argc, char *argv[]) {
             monitoring::lock();
             monitoring::sort_readings();
             int y = 0;
-            const char *text;
+            const char* text;
             while ((text = monitoring::pull_reading())) {
                 draw_text(&canvas, &test_font_atlas, &test_font, text, 0, y);
                 y += 14;
@@ -815,7 +816,7 @@ int main(int argc, char *argv[]) {
         monitoring::flush_readings();
 
         frame_flip ^= 1;
-        snes_ntsc_blit(ntsc_scaler, reinterpret_cast<SNES_NTSC_IN_T *>(canvas.buffer),
+        snes_ntsc_blit(ntsc_scaler, reinterpret_cast<SNES_NTSC_IN_T*>(canvas.buffer),
                        canvas.width, frame_flip, canvas.width, canvas.height,
                        wide_framebuffer.pixels, 4 * wide_framebuffer.width);
 
@@ -834,8 +835,8 @@ int main(int argc, char *argv[]) {
                     XKeyEvent key_press = event.xkey;
                     KeySym keysym = XLookupKeysym(&key_press, 0);
                     input::on_key_press(input_system, keysym);
-                } break;
-
+                    break;
+                }
                 case KeyRelease: {
                     XKeyEvent key_release = event.xkey;
                     bool auto_repeated = false;
@@ -859,15 +860,16 @@ int main(int argc, char *argv[]) {
                         KeySym keysym = XLookupKeysym(&key_release, 0);
                         input::on_key_release(input_system, keysym);
                     }
-                } break;
-
+                    break;
+                }
                 case ClientMessage: {
                     XClientMessageEvent client_message = event.xclient;
                     if (client_message.data.l[0] == wm_delete_window) {
                         XDestroyWindow(display, window);
                         quit = true;
                     }
-                } break;
+                    break;
+                }
             }
         }
 

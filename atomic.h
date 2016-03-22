@@ -1,5 +1,4 @@
-#ifndef ATOMIC_H
-#define ATOMIC_H
+#pragma once
 
 typedef long AtomicBool;
 typedef long AtomicFlag;
@@ -13,5 +12,3 @@ bool atomic_bool_load(AtomicBool* b);
 
 void atomic_int_store(AtomicInt* i, long value);
 long atomic_int_load(AtomicInt* i);
-
-#endif

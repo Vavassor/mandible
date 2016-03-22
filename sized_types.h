@@ -1,5 +1,4 @@
-#ifndef BASIC_TYPES_H_
-#define BASIC_TYPES_H_
+#pragma once
 
 #include <cstdint>
 
@@ -12,5 +11,3 @@ typedef int8_t s8;
 typedef int16_t s16;
 typedef int32_t s32;
 typedef int64_t s64;
-
-#endif

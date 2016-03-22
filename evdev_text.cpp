@@ -5,7 +5,7 @@
 #define TEXT_CASE(code)	\
     case code: return #code;
 
-const char *button_code_text(int virtual_code) {
+const char* button_code_text(int virtual_code) {
     switch (virtual_code) {
         // BTN_MISC
         TEXT_CASE(BTN_0);
@@ -134,7 +134,7 @@ const char *button_code_text(int virtual_code) {
     return "Button Unknown";
 }
 
-const char *abs_code_text(int virtual_code) {
+const char* abs_code_text(int virtual_code) {
     switch (virtual_code) {
         // Gamepad, Joystick, and arcade-style controller codes
         TEXT_CASE(ABS_X);
@@ -188,7 +188,7 @@ const char *abs_code_text(int virtual_code) {
     return "Absolute Axis Unknown";
 }
 
-const char *rel_code_text(int virtual_code) {
+const char* rel_code_text(int virtual_code) {
     switch (virtual_code) {
         // mice, track-balls, scroll wheels
         TEXT_CASE(REL_X);

@@ -9,13 +9,13 @@
 
 namespace monitoring {
 
-static void timer_begin(Timer *timer) {
+static void timer_begin(Timer* timer) {
     timespec timestamp;
     clock_gettime(CLOCK_MONOTONIC, &timestamp);
     timer->start = timestamp.tv_nsec + timestamp.tv_sec * 1e9;
 }
 
-static int64_t timer_end(Timer *timer) {
+static int64_t timer_end(Timer* timer) {
     timespec timestamp;
     clock_gettime(CLOCK_MONOTONIC, &timestamp);
     int64_t end = timestamp.tv_nsec + timestamp.tv_sec * 1e9;
@@ -34,7 +34,7 @@ static int64_t timer_get_resolution() {
 
 struct Monitor {
     struct Reading {
-        const char *name;
+        const char* name;
         int64_t duration;
     } readings[MAX_READINGS];
     char text_buffer[128];
@@ -44,15 +44,15 @@ struct Monitor {
 };
 
 namespace {
-    Monitor *monitor;
+    Monitor* monitor;
 }
 
 bool startup() {
-    monitor = static_cast<Monitor *>(std::calloc(1, sizeof(Monitor)));
+    monitor = static_cast<Monitor*>(std::calloc(1, sizeof(Monitor)));
     if (!monitor) {
         return false;
     }
-    pthread_mutex_init(&monitor->mutex, NULL);
+    pthread_mutex_init(&monitor->mutex, nullptr);
 
     int64_t nanoseconds = timer_get_resolution();
     monitor->clock_frequency = static_cast<double>(nanoseconds) / 1.0e6;
@@ -67,11 +67,11 @@ void shutdown() {
     }
 }
 
-void begin_period(Timer *timer) {
+void begin_period(Timer* timer) {
     timer_begin(timer);
 }
 
-void end_period(Timer *timer, const char *period_name) {
+void end_period(Timer* timer, const char* period_name) {
     int64_t duration = timer_end(timer);
     lock();
     monitor->readings[monitor->total_readings].name = period_name;
@@ -104,9 +104,9 @@ static inline int compare_strings(const char* s1, const char* s2) {
            *reinterpret_cast<const unsigned char*>(s2);
 }
 
-static int reading_compare(const void *reading1, const void *reading2) {
-    auto *r1 = static_cast<const Monitor::Reading *>(reading1);
-    auto *r2 = static_cast<const Monitor::Reading *>(reading2);
+static int reading_compare(const void* reading1, const void* reading2) {
+    auto* r1 = static_cast<const Monitor::Reading*>(reading1);
+    auto* r2 = static_cast<const Monitor::Reading*>(reading2);
     return compare_strings(r1->name, r2->name);
 }
 
@@ -115,13 +115,13 @@ void sort_readings() {
                sizeof(*monitor->readings), reading_compare);
 }
 
-const char *pull_reading() {
+const char* pull_reading() {
     if (monitor->total_readings <= 0) {
-        return NULL;
+        return nullptr;
     }
 
     monitor->total_readings -= 1;
-    Monitor::Reading *reading = monitor->readings + monitor->total_readings;
+    Monitor::Reading* reading = monitor->readings + monitor->total_readings;
     double milliseconds = static_cast<double>(reading->duration) *
                           monitor->clock_frequency;
     std::sprintf(monitor->text_buffer, "%s: %f\n", reading->name,
