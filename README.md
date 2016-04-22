@@ -14,4 +14,4 @@ This source code is all C/C++ and is intended to be built using [CMake](https://
 
 ## Licensing
 
-This software is released into the public domain, with the sole exception of [snes_ntsc](http://slack.net/~ant/libs/ntsc.html), which is under [LGPLv2.1](http://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html) by Shay Green according to the description in those files. This is temporary, as the intent is for this code to eventually be fully public domain. Also note: [stb_image and stb_vorbis](https://github.com/nothings/stb) are included but are themselves public domain.
+This software is released into the public domain according to [the Creative Commons Zero 1.0 public domain dedication](https://creativecommons.org/publicdomain/zero/1.0/). Also note: [stb_image and stb_vorbis](https://github.com/nothings/stb) are included but are themselves public domain.

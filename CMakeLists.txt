@@ -7,14 +7,14 @@ set (INCLUDES
     audio.h
     evdev_text.h
     font.h
+    gl_core_3_3.h
+    gl_shader.h
     glx_extensions.h
     input.h
     logging.h
     monitoring.h
+    random.h
     sized_types.h
-    snes_ntsc.h
-    snes_ntsc_config.h
-    snes_ntsc_impl.h
     stb_image.h
     string_utilities.h
     unicode.h
@@ -28,12 +28,14 @@ set (SOURCES
     audio.cpp
     evdev_text.cpp
     font.cpp
+    gl_core_3_3.c
+    gl_shader.cpp
     glx_extensions.cpp
     input.cpp
     logging.cpp
     monitoring.cpp
     main.cpp
-    snes_ntsc.c
+    random.cpp
     stb_vorbis.c
     string_utilities.cpp
     unicode.cpp

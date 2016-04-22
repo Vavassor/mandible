@@ -1,21 +1,23 @@
 #include "sized_types.h"
 #include "logging.h"
-#include "snes_ntsc.h"
 #include "input.h"
 #include "audio.h"
 #include "monitoring.h"
 #include "font.h"
 #include "string_utilities.h"
 #include "unicode.h"
+#include "random.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
 #include <X11/X.h>
 #include <X11/Xlib.h>
-#include <GL/glx.h>
 
+#include "gl_core_3_3.h"
 #include "glx_extensions.h"
+
+#include "gl_shader.h"
 
 #include <time.h>
 
@@ -53,7 +55,7 @@ struct Atlas {
 static void load_atlas(Atlas* atlas, const char* name) {
     char path[256];
     copy_string(path, "Assets/", sizeof path);
-    concatenate(path, name, sizeof path);
+    append_string(path, name, sizeof path);
     atlas->data = stbi_load(path, &atlas->width, &atlas->height,
                             &atlas->bytes_per_pixel, 0);
 }
@@ -81,7 +83,7 @@ static void unload_image(Image* image) {
 // Canvas Functions............................................................
 
 struct Canvas {
-    u16* buffer;
+    u32* pixels;
     int width;
     int height;
 };
@@ -89,38 +91,61 @@ struct Canvas {
 static bool canvas_create(Canvas* canvas, int width, int height) {
     canvas->width = width;
     canvas->height = height;
-    canvas->buffer = ALLOCATE_ARRAY(u16, width * height);
-    return canvas->buffer;
+    canvas->pixels = ALLOCATE_ARRAY(u32, width * height);
+    return canvas->pixels;
 }
 
 static void canvas_destroy(Canvas* canvas) {
-    if (canvas->buffer) {
-        DEALLOCATE(canvas->buffer);
+    if (canvas->pixels) {
+        DEALLOCATE(canvas->pixels);
     }
 }
 
-#define PACK16(x)        \
-    (((x) >> 3 & 0x1F) | \
-    ((x) >> 6 & 0x3E0) | \
-    ((x) >> 9 & 0x7C00))
-
-// @Incomplete: untested
-#define UNPACK16(x)        \
-    ((((x) & 0x1F) << 3) | \
-    (((x) & 0x3E0) << 6) | \
-    (((x) & 0x7C00) << 9))
-
-static inline void set_pixel(Canvas* canvas, int x, int y, u16 value) {
+static inline void set_pixel(Canvas* canvas, int x, int y, u32 value) {
     assert(x >= 0 && x < canvas->width);
     assert(y >= 0 && y < canvas->height);
-    canvas->buffer[y * canvas->width + x] = value;
+    canvas->pixels[y * canvas->width + x] = value;
+}
+
+#define GET_ALPHA(colour) ((colour) >> 24 & 0xFF)
+#define GET_RED(colour)   ((colour) >> 16 & 0xFF)
+#define GET_GREEN(colour) ((colour) >> 8 & 0xFF)
+#define GET_BLUE(colour)  ((colour) & 0xFF)
+
+#define PACK_RGB(r, g, b) \
+    ((r & 0xFF) << 16 | (g & 0xFF) << 8 | (b & 0xFF))
+
+#define PACK_RGBA(r, g, b, a) \
+    ((a & 0xFF) << 24 | (r & 0xFF) << 16 | (g & 0xFF) << 8 | (b & 0xFF))
+
+static inline void set_pixel_alpha(Canvas* canvas, int x, int y, u32 value) {
+
+    assert(x >= 0 && x < canvas->width);
+    assert(y >= 0 && y < canvas->height);
+
+    u8 alpha = GET_ALPHA(value);
+    u32 a = alpha + 1;    // alpha
+    u32 ia = 256 - alpha; // inverse alpha
+
+    int index = y * canvas->width + x;
+    u32 background = canvas->pixels[index];
+    u32 br = GET_RED(background);
+    u32 bg = GET_GREEN(background);
+    u32 bb = GET_BLUE(background);
+
+    u32 fr = GET_RED(value); // foreground colour
+    u32 fg = GET_GREEN(value);
+    u32 fb = GET_BLUE(value);
+
+    canvas->pixels[index] = PACK_RGB((a * fr + ia * br) >> 8,
+                                     (a * fg + ia * bg) >> 8,
+                                     (a * fb + ia * bb) >> 8);
 }
 
 static void canvas_fill(Canvas* canvas, u32 colour) {
     int pixel_count = canvas->width * canvas->height;
-    u16 colour16 = PACK16(colour);
     for (int i = 0; i < pixel_count; ++i) {
-        canvas->buffer[i] = colour16;
+        canvas->pixels[i] = colour;
     }
 }
 
@@ -128,8 +153,8 @@ static int mod(int x, int m) {
     return (x % m + m) % m;
 }
 
-static void draw_rectangle(Canvas* canvas, Atlas* atlas, int cx, int cy,
-                           int tx, int ty, int width, int height) {
+static void draw_subimage(Canvas* canvas, Atlas* atlas, int cx, int cy,
+                          int tx, int ty, int width, int height) {
     if (cx < 0) {
         tx -= cx;
         width += cx;
@@ -162,9 +187,75 @@ static void draw_rectangle(Canvas* canvas, Atlas* atlas, int cx, int cy,
             int atlas_y = mod(ty + y, atlas->height);
             int ai = atlas_y * atlas->width + atlas_x;
             u32 c = reinterpret_cast<u32*>(atlas->data)[ai];
-            if (c & 0xFF000000) {
-                set_pixel(canvas, cx + x, cy + y, PACK16(c));
+            if (GET_ALPHA(c)) {
+                set_pixel(canvas, cx + x, cy + y, c);
             }
+        }
+    }
+}
+
+static void draw_rectangle(Canvas* canvas, int cx, int cy,
+                           int width, int height, u32 colour) {
+    if (cx < 0) {
+        width += cx;
+        if (width > 0) {
+            cx = 0;
+        }
+    }
+
+    int extra_width = (cx + width) - canvas->width;
+    if (extra_width > 0) {
+        width -= extra_width;
+    }
+
+    if (cy < 0) {
+        height += cy;
+        if (height > 0) {
+            cy = 0;
+        }
+    }
+
+    int extra_height = (cy + height) - canvas->height;
+    if (extra_height > 0) {
+        height -= extra_height;
+    }
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            set_pixel(canvas, cx + x, cy + y, colour);
+        }
+    }
+}
+
+static void draw_rectangle_transparent(Canvas* canvas, int cx, int cy,
+                                       int width, int height, u32 colour) {
+    if (cx < 0) {
+        width += cx;
+        if (width > 0) {
+            cx = 0;
+        }
+    }
+
+    int extra_width = (cx + width) - canvas->width;
+    if (extra_width > 0) {
+        width -= extra_width;
+    }
+
+    if (cy < 0) {
+        height += cy;
+        if (height > 0) {
+            cy = 0;
+        }
+    }
+
+    int extra_height = (cy + height) - canvas->height;
+    if (extra_height > 0) {
+        height -= extra_height;
+    }
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            set_pixel_alpha(canvas, cx + x, cy + y, colour);
         }
     }
 }
@@ -235,7 +326,6 @@ static void draw_line(Canvas* canvas, int x1, int y1, int x2, int y2,
 
     // Draw the clipped line segment to the canvas.
     {
-        u16 colour16 = PACK16(colour);
         int adx = std::abs(x2 - x1);  // absolute value of delta x
         int ady = std::abs(y2 - y1);  // absolute value of delta y
         int sdx = sign(x2 - x1); // sign of delta x
@@ -245,7 +335,7 @@ static void draw_line(Canvas* canvas, int x1, int y1, int x2, int y2,
         int px = x1;             // plot x
         int py = y1;             // plot y
 
-        set_pixel(canvas, px, py, colour16);
+        set_pixel(canvas, px, py, colour);
 
         if (adx >= ady) {
             for (int i = 0; i < adx; ++i) {
@@ -255,7 +345,7 @@ static void draw_line(Canvas* canvas, int x1, int y1, int x2, int y2,
                     py += sdy;
                 }
                 px += sdx;
-                set_pixel(canvas, px, py, colour16);
+                set_pixel(canvas, px, py, colour);
             }
         } else {
             for (int i = 0; i < ady; ++i) {
@@ -265,29 +355,65 @@ static void draw_line(Canvas* canvas, int x1, int y1, int x2, int y2,
                     px += sdx;
                 }
                 py += sdy;
-                set_pixel(canvas, px, py, colour16);
+                set_pixel(canvas, px, py, colour);
             }
         }
     }
 }
 
-// @Unused
-#if 0
-static void scale_whole_canvas(Canvas* to, Canvas* from, int scale) {
-    int w = scale * from->width;
-    int h = scale * from->height;
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            int ti = 4 * (y * to->width + x);
-            int fi = 4 * ((y / scale) * from->width + (x / scale));
-            to->buffer[ti+0] = from->buffer[fi+0];
-            to->buffer[ti+1] = from->buffer[fi+1];
-            to->buffer[ti+2] = from->buffer[fi+2];
-            to->buffer[ti+3] = from->buffer[fi+3];
-        }
+static void hue_shift_matrix(double matrix[3][3], double h) {
+    double u = std::cos(h);
+    double w = std::sin(h);
+
+    matrix[0][0] = u + (1.0 - u) / 3.0;
+    matrix[0][1] = 1.0 / 3.0 * (1.0 - u) - std::sqrt(1.0 / 3.0) * w;
+    matrix[0][2] = 1.0 / 3.0 * (1.0 - u) + std::sqrt(1.0 / 3.0) * w;
+
+    matrix[1][0] = 1.0 / 3.0 * (1.0 - u) + std::sqrt(1.0 / 3.0) * w;
+    matrix[1][1] = u + 1.0 / 3.0 * (1.0 - u);
+    matrix[1][2] = 1.0 / 3.0 * (1.0 - u) - std::sqrt(1.0 / 3.0) * w;
+
+    matrix[2][0] = 1.0 / 3.0 * (1.0 - u) - std::sqrt(1.0 / 3.0) * w;
+    matrix[2][1] = 1.0 / 3.0 * (1.0 - u) + std::sqrt(1.0 / 3.0) * w;
+    matrix[2][2] = u + 1.0 / 3.0 * (1.0 - u);
+}
+
+static u8 clamp8(double s) {
+    if (s < 0) {
+        return 0;
+    } else if (s > 255) {
+        return 255;
+    } else {
+        return s;
     }
 }
-#endif
+
+static u32 transform_colour(u32 colour, double matrix[3][3]) {
+    struct { double r, g, b; } in;
+    in.r = GET_RED(colour);
+    in.g = GET_GREEN(colour);
+    in.b = GET_BLUE(colour);
+
+    struct { u8 r, g, b; } out;
+    out.r = clamp8(in.r * matrix[0][0] + in.g * matrix[0][1] + in.b * matrix[0][2]);
+    out.g = clamp8(in.r * matrix[1][0] + in.g * matrix[1][1] + in.b * matrix[1][2]);
+    out.b = clamp8(in.r * matrix[2][0] + in.g * matrix[2][1] + in.b * matrix[2][2]);
+
+    return PACK_RGBA(out.r, out.g, out.b, GET_ALPHA(colour));
+}
+
+// A colour table maximising the colour difference between each value and all
+// of the others. CIEDE2000 was used as the formula for comparison.
+static const u32 distinct_colour_table[64] = {
+    0x000000, 0x00FF00, 0x0000FF, 0xFF0000, 0x01FFFE, 0xFFA6FE, 0xFFDB66, 0x006401,
+    0x010067, 0x95003A, 0x007DB5, 0xFF00F6, 0xFFEEE8, 0x774D00, 0x90FB92, 0x0076FF,
+    0xD5FF00, 0xFF937E, 0x6A826C, 0xFF029D, 0xFE8900, 0x7A4782, 0x7E2DD2, 0x85A900,
+    0xFF0056, 0xA42400, 0x00AE7E, 0x683D3B, 0xBDC6FF, 0x263400, 0xBDD393, 0x00B917,
+    0x9E008E, 0x001544, 0xC28C9F, 0xFF74A3, 0x01D0FF, 0x004754, 0xE56FFE, 0x788231,
+    0x0E4CA1, 0x91D0CB, 0xBE9970, 0x968AE8, 0xBB8800, 0x43002C, 0xDEFF74, 0x00FFC6,
+    0xFFE502, 0x620E00, 0x008F9C, 0x98FF52, 0x7544B1, 0xB500FF, 0x00FF78, 0xFF6E41,
+    0x005F39, 0x6B6882, 0x5FAD4E, 0xA75740, 0xA5FFD2, 0xFFB167, 0x009BFF, 0xE85EBE,
+};
 
 // Text-rendering functions....................................................
 
@@ -378,47 +504,12 @@ static void draw_text(Canvas* canvas, Atlas* atlas, BmFont* font,
                 int ty = glyph->texcoord.top;
                 int tw = glyph->texcoord.width;
                 int th = glyph->texcoord.height;
-                draw_rectangle(canvas, atlas, x, y, tx, ty, tw, th);
+                draw_subimage(canvas, atlas, x, y, tx, ty, tw, th);
                 pen.x += font->tracking + glyph->x_advance;
             }
         }
 
         prior_char = c;
-    }
-}
-
-// Framebuffer Functions.......................................................
-
-struct Framebuffer {
-    u32* pixels;
-    int width;
-    int height;
-};
-
-static bool framebuffer_create(Framebuffer* framebuffer,
-                               int width, int height) {
-    framebuffer->width = width;
-    framebuffer->height = height;
-    framebuffer->pixels = ALLOCATE_ARRAY(u32, width * height);
-    return framebuffer->pixels;
-}
-
-static void framebuffer_destroy(Framebuffer* framebuffer) {
-    if (framebuffer->pixels) {
-        DEALLOCATE(framebuffer->pixels);
-    }
-}
-
-static void double_vertically_and_flip(Framebuffer *RESTRICT to,
-                                       Framebuffer *RESTRICT from) {
-    int w = from->width;
-    int h = 2 * from->height;
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            int ti = (h - y) * to->width + x;
-            int fi = (y / 2) * from->width + x;
-            to->pixels[ti] = from->pixels[fi];
-        }
     }
 }
 
@@ -520,13 +611,17 @@ static void unload_pixmap(Display* display, Pixmap pixmap) {
 static void set_icons(Display* display, Window window, Atom net_wm_icon,
                       Atom cardinal, Image* icons, int icon_count) {
 
-    int total_pixels = 0;
+    int total_longs = 0;
     for (int i = 0; i < icon_count; ++i) {
-        total_pixels += 2 + icons[i].width * icons[i].height;
+        total_longs += 2 + icons[i].width * icons[i].height;
     }
 
+    // Pack the icons into a buffer that contains the dimensions of each icon,
+    // width then height, followed by pixel data for width * height pixels.
+    // Repeat this for every icon; the order is unimportant.
+
     unsigned long* icon_buffer;
-    std::size_t total_size = sizeof(unsigned long) * total_pixels;
+    std::size_t total_size = sizeof(unsigned long) * total_longs;
     icon_buffer = static_cast<unsigned long*>(std::malloc(total_size));
     unsigned long* buffer = icon_buffer;
     for (int i = 0; i < icon_count; ++i) {
@@ -543,7 +638,7 @@ static void set_icons(Display* display, Window window, Atom net_wm_icon,
     XChangeProperty(display, window, net_wm_icon, cardinal, 32,
                     PropModeReplace,
                     reinterpret_cast<const unsigned char*>(icon_buffer),
-                    total_pixels);
+                    total_longs);
 
     std::free(icon_buffer);
 }
@@ -555,9 +650,54 @@ static int error_handler(Display* display, XErrorEvent* event) {
     return 0;
 }
 
-int main(int argc, char* argv[]) {
-    const int canvas_width = 256;
-    const int canvas_height = 240;
+struct Mesh {
+    GLuint buffers[2];
+    GLuint vertex_array;
+    GLsizei num_indices;
+};
+
+static void draw_mesh(Mesh* mesh) {
+    glBindVertexArray(mesh->vertex_array);
+    glDrawElements(GL_TRIANGLES, mesh->num_indices, GL_UNSIGNED_SHORT, nullptr);
+}
+
+static void destroy_mesh(Mesh* mesh) {
+    glDeleteBuffers(ARRAY_COUNT(mesh->buffers), mesh->buffers);
+    glDeleteVertexArrays(1, &mesh->vertex_array);
+}
+
+static void resize_framebuffer(GLuint framebuffer, GLuint target_texture, int width, int height, bool is_float = false) {
+    glBindTexture(GL_TEXTURE_2D, target_texture);
+    if (is_float) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
+    } else {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target_texture, 0);
+
+    GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT0 };
+    glDrawBuffers(ARRAY_COUNT(draw_buffers), draw_buffers);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        LOG_ERROR("The framebuffer is incomplete.");
+    }
+}
+
+static inline void cycle_increment(int* s, int n) {
+    *s = (*s + 1) % n;
+}
+
+static inline void cycle_decrement(int* s, int n) {
+    *s = (*s + (n - 1)) % n;
+}
+
+int main(int argc, char** argv) {
+    const int canvas_width = 480;
+    const int canvas_height = 270;
+    const int pixel_scale = 3;
     const char* title = "mandible";
     const double frame_frequency = 1.0 / 60.0;
     const char* icon_names[] = {
@@ -565,7 +705,7 @@ int main(int argc, char* argv[]) {
     };
 
     bool vertical_synchronization = true;
-    bool show_monitoring_overlay = false;
+    bool show_monitoring_overlay = true;
 
     Display* display; // the connection to the X server
     Colormap colormap;
@@ -580,13 +720,26 @@ int main(int argc, char* argv[]) {
     XWMHints* wm_hints;
     Pixmap icccm_icon;
     GLXContext rendering_context;
-    snes_ntsc_t* ntsc_scaler;
-    input::System* input_system;
-    audio::System* audio_system;
+    Mesh canvas_mesh;
+    GLuint canvas_shader;
+    GLuint pass1_shader;
+    GLuint pass2_shader;
+    GLuint pass3_shader;
+    GLuint canvas_texture;
+    GLuint ntsc_dot_crawl;
+    union {
+        struct {
+            GLuint array[2];
+        };
+        struct {
+            GLuint nearest;
+            GLuint linear;
+        };
+    } samplers;
+    GLuint framebuffers[3];
+    GLuint target_textures[3];
     Clock clock;
     Canvas canvas;
-    Framebuffer wide_framebuffer;
-    Framebuffer framebuffer;
     Atlas atlas;
     BmFont test_font;
     Atlas test_font_atlas;
@@ -603,8 +756,17 @@ int main(int argc, char* argv[]) {
 
     // The dimensions of the final canvas after up-scaling.
 
-    int scaled_width = SNES_NTSC_OUT_WIDTH(canvas_width);
-    int scaled_height = 2 * canvas_height;
+    int scaled_width = pixel_scale * canvas_width;
+    int scaled_height = pixel_scale * canvas_height;
+
+    int pass1_width = canvas_width;
+    int pass1_height = canvas_height;
+
+    int pass2_width = scaled_width;
+    int pass2_height = canvas_height;
+
+    int pass3_width = scaled_width;
+    int pass3_height = scaled_height;
 
     // Choose the abstract "Visual" type that will be used to describe both
     // the window and the OpenGL rendering context.
@@ -720,26 +882,120 @@ int main(int argc, char* argv[]) {
 
     load_glx_extensions(display, DefaultScreen(display));
 
-    // Initialise the framebuffer.
-    framebuffer_create(&framebuffer, scaled_width, scaled_height);
-    framebuffer_create(&wide_framebuffer, scaled_width, canvas_height);
+    if (ogl_LoadFunctions() == ogl_LOAD_FAILED) {
+        LOG_ERROR("Failed to load opengl extensions.");
+    }
 
-    // Create the scaler used to up-scale the canvas and simulate NTSC cable
-    // colour-bleeding/artifacts.
-    ntsc_scaler = ALLOCATE_STRUCT(snes_ntsc_t);
-    snes_ntsc_init(ntsc_scaler, &snes_ntsc_composite);
+    // Initialise global opengl values.
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glDisable(GL_DEPTH_TEST);
 
-    // Initialise any other resources needed before the main loop starts.
-    monitoring::startup();
-    input_system = input::startup();
-    audio_system = audio::startup();
-
-    initialise_clock(&clock);
+    // Setup the canvas.
 
     canvas_create(&canvas, canvas_width, canvas_height);
 
+    // Create the rectangle mesh for drawing the canvas.
+    {
+        glGenVertexArrays(1, &canvas_mesh.vertex_array);
+        glBindVertexArray(canvas_mesh.vertex_array);
+
+        glGenBuffers(ARRAY_COUNT(canvas_mesh.buffers), canvas_mesh.buffers);
+
+        const int num_vertices = 4;
+        const float vertices[16] = {
+            -1.0f, -1.0f, 0.0f, 0.0f,
+             1.0f, -1.0f, 1.0f, 0.0f,
+             1.0f,  1.0f, 1.0f, 1.0f,
+            -1.0f,  1.0f, 0.0f, 1.0f,
+        };
+
+        canvas_mesh.num_indices = 6;
+        const GLushort elements[6] = { 0, 3, 1, 1, 3, 2 };
+
+        int vertex_size = (2 + 2) * sizeof(float);
+
+        glBindBuffer(GL_ARRAY_BUFFER, canvas_mesh.buffers[0]);
+        glBufferData(GL_ARRAY_BUFFER, num_vertices * vertex_size, vertices, GL_STATIC_DRAW);
+
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, vertex_size, 0);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, vertex_size, reinterpret_cast<GLvoid*>(sizeof(float) * 2));
+
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, canvas_mesh.buffers[1]);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLushort) * canvas_mesh.num_indices, elements, GL_STATIC_DRAW);
+
+        glBindVertexArray(0);
+    }
+
+    // shader uniform setup for samplers
+    {
+        canvas_shader = load_shader_program(nullptr, nullptr);
+        pass1_shader = load_shader_program(nullptr, "Assets/Shaders/yiq.fs");
+        pass2_shader = load_shader_program(nullptr, "Assets/Shaders/composite.fs");
+        pass3_shader = load_shader_program(nullptr, "Assets/Shaders/fringing.fs");
+
+        glUseProgram(canvas_shader);
+        glUniform1i(glGetUniformLocation(canvas_shader, "texture"), 0);
+
+        glUseProgram(pass1_shader);
+        glUniform1i(glGetUniformLocation(pass1_shader, "texture"), 0);
+
+        glUseProgram(pass2_shader);
+        glUniform1i(glGetUniformLocation(pass2_shader, "texture"), 0);
+        glUniform1i(glGetUniformLocation(pass2_shader, "dot_crawl_texture"), 1);
+
+        glUseProgram(pass3_shader);
+        glUniform1i(glGetUniformLocation(pass3_shader, "texture"), 0);
+    }
+
+    {
+        glGenTextures(1, &ntsc_dot_crawl);
+        glBindTexture(GL_TEXTURE_2D, ntsc_dot_crawl);
+        float data[3 * 9] = {
+            1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 1.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 1.0f,  0.0f, 1.0f, 0.0f,  1.0f, 0.0f, 0.0f,
+        };
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 3, 3, 0, GL_RGB, GL_FLOAT, data);
+    }
+
+    glGenTextures(1, &canvas_texture);
+    glBindTexture(GL_TEXTURE_2D, canvas_texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, canvas.width, canvas.height, 0,
+                 GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, nullptr);
+
+    glGenSamplers(ARRAY_COUNT(samplers.array), samplers.array);
+
+    glSamplerParameteri(samplers.nearest, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glSamplerParameteri(samplers.nearest, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glSamplerParameteri(samplers.linear, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glSamplerParameteri(samplers.linear, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glBindSampler(0, samplers.nearest);
+    glBindSampler(1, samplers.nearest);
+
+    // Initialise the framebuffers and their associated textures.
+    {
+        glGenTextures(ARRAY_COUNT(target_textures), target_textures);
+        glGenFramebuffers(ARRAY_COUNT(framebuffers), framebuffers);
+        resize_framebuffer(framebuffers[0], target_textures[0], pass1_width, pass1_height, true);
+        resize_framebuffer(framebuffers[1], target_textures[1], pass2_width, pass2_height, true);
+        resize_framebuffer(framebuffers[2], target_textures[2], pass3_width, pass3_height, true);
+    }
+
+    // Initialise any other resources needed before the main loop starts.
+    monitoring::startup();
+    input::startup();
+    audio::startup();
+
+    initialise_clock(&clock);
+
+    // Load the test assets.
     load_atlas(&atlas, "player.png");
-    audio::start_stream(audio_system, "grass.ogg", 1.0f, &test_music);
+    audio::start_stream("grass.ogg", 0.0f, &test_music);
 
     bm_font_load(&test_font, "Assets/droid_12.fnt");
     load_atlas(&test_font_atlas, test_font.image.filename);
@@ -763,8 +1019,6 @@ int main(int argc, char* argv[]) {
         int frame_count;
     } fps;
 
-    int frame_flip = 0;
-
     bool quit = false;
     while (!quit) {
         // Record when the frame starts.
@@ -773,9 +1027,87 @@ int main(int argc, char* argv[]) {
         BEGIN_MONITORING(rendering);
 
         // Push the last frame as soon as possible.
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glDrawPixels(framebuffer.width, framebuffer.height, GL_BGRA,
-                     GL_UNSIGNED_INT_8_8_8_8_REV, framebuffer.pixels);
+
+        const float identity_matrix[16] = {
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        };
+
+        const float upside_down_matrix[16] = {
+            1.0f,  0.0f, 0.0f, 0.0f,
+            0.0f, -1.0f, 0.0f, 0.0f,
+            0.0f,  0.0f, 1.0f, 0.0f,
+            0.0f,  0.0f, 0.0f, 1.0f,
+        };
+
+        static int frame_count = 0;
+        cycle_increment(&frame_count, 3);
+
+        // 1st pass
+        {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffers[0]);
+            glViewport(0, 0, pass1_width, pass1_height);
+            const GLfloat clear_color[4] = { 0.0f, 1.0f, 1.0f, 1.0f };
+            glClearBufferfv(GL_COLOR, 0, clear_color);
+
+            glUseProgram(pass1_shader);
+            glUniformMatrix4fv(glGetUniformLocation(pass1_shader, "model_view_projection"), 1, GL_FALSE, identity_matrix);
+            glUniform2f(glGetUniformLocation(pass1_shader, "texture_size"), canvas.width, canvas.height);
+            glBindTexture(GL_TEXTURE_2D, canvas_texture);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, canvas.width, canvas.height, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, canvas.pixels);
+            draw_mesh(&canvas_mesh);
+        }
+
+        // 2nd pass
+        {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffers[1]);
+            glViewport(0, 0, pass2_width, pass2_height);
+            const GLfloat clear_color[4] = { 1.0f, 0.0f, 1.0f, 1.0f };
+            glClearBufferfv(GL_COLOR, 0, clear_color);
+
+            glUseProgram(pass2_shader);
+            glUniformMatrix4fv(glGetUniformLocation(pass2_shader, "model_view_projection"), 1, GL_FALSE, identity_matrix);
+            glUniform2f(glGetUniformLocation(pass2_shader, "texture_size"), pass1_width, pass1_height);
+            glUniform2f(glGetUniformLocation(pass2_shader, "input_size"), pass1_width, pass1_height);
+            glUniform2f(glGetUniformLocation(pass2_shader, "output_size"), pass2_width, pass2_height);
+            glUniform1f(glGetUniformLocation(pass2_shader, "frame_count"), frame_count);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, ntsc_dot_crawl);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, target_textures[0]);
+            draw_mesh(&canvas_mesh);
+        }
+
+        // 3rd pass
+        {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffers[2]);
+            glViewport(0, 0, pass3_width, pass3_height);
+            const GLfloat clear_color[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+            glClearBufferfv(GL_COLOR, 0, clear_color);
+
+            glUseProgram(pass3_shader);
+            glUniformMatrix4fv(glGetUniformLocation(pass3_shader, "model_view_projection"), 1, GL_FALSE, identity_matrix);
+            glUniform2f(glGetUniformLocation(pass3_shader, "texture_size"), pass2_width, pass2_height);
+            glUniform2f(glGetUniformLocation(pass3_shader, "input_size"), pass2_width, pass2_height);
+            glUniform2f(glGetUniformLocation(pass3_shader, "output_size"), pass3_width, pass3_height);
+            glBindTexture(GL_TEXTURE_2D, target_textures[1]);
+            draw_mesh(&canvas_mesh);
+        }
+
+        // final draw to the main framebuffer
+        {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glViewport(0, 0, scaled_width, scaled_height);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            glUseProgram(canvas_shader);
+            glUniformMatrix4fv(glGetUniformLocation(canvas_shader, "model_view_projection"), 1, GL_FALSE, upside_down_matrix);
+            glBindTexture(GL_TEXTURE_2D, target_textures[2]);
+            draw_mesh(&canvas_mesh);
+        }
+
         glXSwapBuffers(display, window);
 
         END_MONITORING(rendering);
@@ -783,48 +1115,105 @@ int main(int argc, char* argv[]) {
         BEGIN_MONITORING(drawing);
 
         // Then draw the next frame.
-        canvas_fill(&canvas, 0x00ff00);
+        canvas_fill(&canvas, 0x00FF00);
 
         {
             static float position_x = 0.0f;
             static float position_y = 0.0f;
-            input::Controller* controller = input::get_controller(input_system);
+            input::Controller* controller = input::get_controller();
             position_x += 0.9f * input::get_axis(controller, input::USER_AXIS_HORIZONTAL);
             position_y -= 0.9f * input::get_axis(controller, input::USER_AXIS_VERTICAL);
             int x = position_x;
             int y = position_y;
             if (input::is_button_tapped(controller, input::USER_BUTTON_A)) {
                 y += 10;
-                audio::play_once(audio_system, "Jump.wav", 0.5f);
+                audio::play_once("Jump.wav", 0.5f);
             }
-            draw_rectangle(&canvas, &atlas, x, y, 0, 0, 128, 128);
+            draw_subimage(&canvas, &atlas, x, y, 0, 0, 128, 128);
 
             draw_line(&canvas, x, y, 150, 150, 0xFFFFFF);
         }
 
+        {
+            draw_text(&canvas, &test_font_atlas, &test_font, "well, obviously we will leave", 10, 100);
+            draw_text(&canvas, &test_font_atlas, &test_font, "our earthly containers", 10, 110);
+        }
+
         if (show_monitoring_overlay) {
+            int graph_x = 10;
+            int graph_y = 10;
+            int graph_height = 32;
+            int bar_width = 1;
+
+            // Draw the graph background.
+
+            int box_width = bar_width * monitoring::MAX_SLICES;
+            draw_rectangle_transparent(&canvas, graph_x, graph_y,
+                                       box_width, graph_height, 0x8F000000);
+
+            // These variables relate to how much of a bar to fill for a
+            // particular reading.
+            double nanoseconds_per_pixel = 5.0e6;
+            double base = 0.0;
+            double filled = 0.0;
+
+            // an index into the "distinct colour table"
+            const int starting_colour_index = 14;
+            int colour_index = starting_colour_index;
+
+            // Pull the monitoring data and draw bars on the graph.
+
             monitoring::lock();
-            monitoring::sort_readings();
-            int y = 0;
-            const char* text;
-            while ((text = monitoring::pull_reading())) {
-                draw_text(&canvas, &test_font_atlas, &test_font, text, 0, y);
-                y += 14;
+            monitoring::Chart* chart = monitoring::get_chart();
+            FOR_N(i, monitoring::MAX_SLICES) {
+                int bar_x = graph_x + bar_width * i;
+
+                if (i == chart->current_slice) {
+                    // The current slice is always going to have empty or old
+                    // information, so a timer marker is drawn in its place.
+                    draw_rectangle(&canvas, bar_x, graph_y, bar_width,
+                                   graph_height, 0xFF00FFFF);
+                } else {
+                    // Fill the current slice with a striped bar of colours,
+                    // where the colours denote which readings contributes to
+                    // that much of the bar.
+
+                    monitoring::Chart::Slice* slice = chart->slices + i;
+                    FOR_N(j, slice->total_readings) {
+                        monitoring::Reading* reading = slice->readings + j;
+
+                        filled += static_cast<double>(reading->elapsed_total) /
+                                  nanoseconds_per_pixel;
+                        if (filled - base >= 1) {
+                            int y_bottom = base;
+                            int y_top = filled;
+                            int bar_height = y_top - y_bottom;
+                            u32 colour = distinct_colour_table[colour_index];
+                            draw_rectangle(&canvas, bar_x, graph_y + y_bottom,
+                                           bar_width, bar_height, colour);
+
+                            base = filled;
+                        }
+
+                        cycle_increment(&colour_index, ARRAY_COUNT(distinct_colour_table));
+                    }
+                }
+
+                base = 0.0;
+                filled = 0.0;
+                colour_index = starting_colour_index;
             }
             monitoring::unlock();
         }
-        monitoring::flush_readings();
 
-        frame_flip ^= 1;
-        snes_ntsc_blit(ntsc_scaler, reinterpret_cast<SNES_NTSC_IN_T*>(canvas.buffer),
-                       canvas.width, frame_flip, canvas.width, canvas.height,
-                       wide_framebuffer.pixels, 4 * wide_framebuffer.width);
-
-        double_vertically_and_flip(&framebuffer, &wide_framebuffer);
+        // Since the monitoring data has been reported or ignored at this
+        // point, tell the monitoring system to go ahead and move to the next
+        // time slice.
+        monitoring::complete_frame();
 
         END_MONITORING(drawing);
 
-        input::poll(input_system);
+        input::poll();
 
         // Flush the events queue and respond to any pertinent events.
         while (XPending(display) > 0) {
@@ -834,7 +1223,7 @@ int main(int argc, char* argv[]) {
                 case KeyPress: {
                     XKeyEvent key_press = event.xkey;
                     KeySym keysym = XLookupKeysym(&key_press, 0);
-                    input::on_key_press(input_system, keysym);
+                    input::on_key_press(keysym);
                     break;
                 }
                 case KeyRelease: {
@@ -858,7 +1247,7 @@ int main(int argc, char* argv[]) {
 
                     if (!auto_repeated) {
                         KeySym keysym = XLookupKeysym(&key_release, 0);
-                        input::on_key_release(input_system, keysym);
+                        input::on_key_release(keysym);
                     }
                     break;
                 }
@@ -896,22 +1285,30 @@ int main(int argc, char* argv[]) {
     }
 
     // Unload all assets.
-    audio::stop_stream(audio_system, test_music);
+    audio::stop_stream(test_music);
     unload_atlas(&test_font_atlas);
     bm_font_unload(&test_font);
     unload_atlas(&atlas);
     unload_pixmap(display, icccm_icon);
 
     // Shutdown all systems.
-    audio::shutdown(audio_system);
-    input::shutdown(input_system);
+    audio::shutdown();
+    input::shutdown();
     monitoring::shutdown();
 
     // Free and destroy any system resources.
-    framebuffer_destroy(&framebuffer);
-    framebuffer_destroy(&wide_framebuffer);
     canvas_destroy(&canvas);
-    DEALLOCATE(ntsc_scaler);
+
+    glDeleteTextures(ARRAY_COUNT(target_textures), target_textures);
+    glDeleteFramebuffers(ARRAY_COUNT(framebuffers), framebuffers);
+    glDeleteSamplers(ARRAY_COUNT(samplers.array), samplers.array);
+    glDeleteTextures(1, &canvas_texture);
+    glDeleteTextures(1, &ntsc_dot_crawl);
+    glDeleteProgram(pass3_shader);
+    glDeleteProgram(pass2_shader);
+    glDeleteProgram(pass1_shader);
+    glDeleteProgram(canvas_shader);
+    destroy_mesh(&canvas_mesh);
 
     glXDestroyContext(display, rendering_context);
     XFree(wm_hints);

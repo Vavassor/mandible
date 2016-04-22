@@ -608,8 +608,8 @@ struct Stream {
     enum class DecoderType {
         Vorbis,
         Wave,
-    };
-    DecoderType decoder_type;
+    } decoder_type;
+
     union {
         struct {
             stb_vorbis* decoder;
@@ -618,6 +618,7 @@ struct Stream {
             WaveDecoder* decoder;
         } wave;
     };
+
     int channels;
     float* decoded_samples;
     float volume;
@@ -641,10 +642,6 @@ struct StreamManager {
     Stream streams[MAX_STREAMS];
     int stream_count;
 };
-
-static void initialise_stream_manager(StreamManager* stream_manager) {
-    std::memset(stream_manager, 0, sizeof *stream_manager);
-}
 
 static int close_stream(StreamManager* manager, int stream_index) {
     assert(stream_index >= 0 && stream_index < manager->stream_count);
@@ -697,7 +694,7 @@ static void open_stream(StreamManager* stream_manager, const char* filename,
 
     char path[256];
     copy_string(path, "Assets/", sizeof path);
-    concatenate(path, filename, sizeof path);
+    append_string(path, filename, sizeof path);
 
     switch (stream->decoder_type) {
         case Stream::DecoderType::Vorbis: {
@@ -819,6 +816,7 @@ struct Message {
         Start_Stream,
         Stop_Stream,
     } code;
+
     union {
         struct {
             char filename[128];
@@ -878,7 +876,7 @@ static bool dequeue_message(MessageQueue* queue, Message* message) {
 
 // System Functions............................................................
 
-struct System {
+namespace {
     StreamManager stream_manager;
     MessageQueue message_queue;
     ConversionInfo conversion_info;
@@ -890,64 +888,57 @@ struct System {
     AtomicFlag quit;
     double time;
     StreamId stream_id_seed;
-};
+}
 
 static void* run_mixer_thread(void* argument) {
-    System* system = static_cast<System*>(argument);
-
-    Specification specification;
     specification.channels = 2;
     specification.format = FORMAT_S16;
     specification.sample_rate = 44100;
     specification.frames = 1024;
     fill_remaining_specification(&specification);
-    if (!open_device("default", &specification, &system->pcm_handle)) {
+    if (!open_device("default", &specification, &pcm_handle)) {
         LOG_ERROR("Failed to open audio device.");
     }
-    system->specification = specification;
 
     std::size_t samples = specification.channels * specification.frames;
 
-    // Setup streams.
-    initialise_stream_manager(&system->stream_manager);
-
     // Setup mixing.
-    system->mixed_samples = ALLOCATE_ARRAY(float, samples);
-    system->devicebound_samples = ALLOCATE_ARRAY(u8, specification.size);
-    fill_with_silence(system->mixed_samples, specification.silence, samples);
+    mixed_samples = ALLOCATE_ARRAY(float, samples);
+    devicebound_samples = ALLOCATE_ARRAY(u8, specification.size);
+    fill_with_silence(mixed_samples, specification.silence, samples);
 
-    system->conversion_info.channels = specification.channels;
-    system->conversion_info.in.format = FORMAT_F32;
-    system->conversion_info.in.stride = system->conversion_info.channels;
-    system->conversion_info.out.format = system->specification.format;
-    system->conversion_info.out.stride = system->conversion_info.channels;
+    conversion_info.channels = specification.channels;
+    conversion_info.in.format = FORMAT_F32;
+    conversion_info.in.stride = conversion_info.channels;
+    conversion_info.out.format = specification.format;
+    conversion_info.out.stride = conversion_info.channels;
 
-    int frame_size = system->conversion_info.channels *
-                     format_byte_count(system->conversion_info.out.format);
+    int frame_size = conversion_info.channels *
+                     format_byte_count(conversion_info.out.format);
 
-    while (atomic_flag_test_and_set(&system->quit)) {
+    while (atomic_flag_test_and_set(&quit)) {
         BEGIN_MONITORING(audio);
 
         // Process any messages from the main thread.
         {
             Message message;
-            while (dequeue_message(&system->message_queue, &message)) {
+            while (dequeue_message(&message_queue, &message)) {
                 switch (message.code) {
                     case Message::Code::Play_Once: {
-                        open_stream(&system->stream_manager,
+                        open_stream(&stream_manager,
                                     message.play_once.filename, samples,
                                     message.play_once.volume, false);
                         break;
                     }
                     case Message::Code::Start_Stream: {
-                        open_stream(&system->stream_manager,
+                        open_stream(&stream_manager,
                                     message.start_stream.filename, samples,
                                     message.start_stream.volume, true,
                                     message.start_stream.stream_id);
                         break;
                     }
                     case Message::Code::Stop_Stream: {
-                        close_stream_by_id(&system->stream_manager,
+                        close_stream_by_id(&stream_manager,
                                            message.stop_stream.stream_id);
                         break;
                     }
@@ -955,31 +946,31 @@ static void* run_mixer_thread(void* argument) {
             }
         }
 
-        decode_streams(&system->stream_manager, system->specification.frames);
+        decode_streams(&stream_manager, specification.frames);
 
-        fill_with_silence(system->mixed_samples, specification.silence, samples);
-        mix_streams(&system->stream_manager, system->mixed_samples,
-                    system->specification.frames, system->specification.channels);
+        fill_with_silence(mixed_samples, specification.silence, samples);
+        mix_streams(&stream_manager, mixed_samples,
+                    specification.frames, specification.channels);
 
-        convert_format(system->mixed_samples, system->devicebound_samples,
-                       system->specification.frames, &system->conversion_info);
+        convert_format(mixed_samples, devicebound_samples,
+                       specification.frames, &conversion_info);
 
-        int stream_ready = snd_pcm_wait(system->pcm_handle, 150);
+        int stream_ready = snd_pcm_wait(pcm_handle, 150);
         if (!stream_ready) {
             LOG_ERROR("ALSA device waiting timed out!");
         }
 
-        u8* buffer = static_cast<u8*>(system->devicebound_samples);
-        snd_pcm_uframes_t frames_left = system->specification.frames;
+        u8* buffer = static_cast<u8*>(devicebound_samples);
+        snd_pcm_uframes_t frames_left = specification.frames;
         while (frames_left > 0) {
-            int frames_written = snd_pcm_writei(system->pcm_handle, buffer,
+            int frames_written = snd_pcm_writei(pcm_handle, buffer,
                                                 frames_left);
             if (frames_written < 0) {
                 int status = frames_written;
                 if (status == -EAGAIN) {
                     continue;
                 }
-                status = snd_pcm_recover(system->pcm_handle, status, 0);
+                status = snd_pcm_recover(pcm_handle, status, 0);
                 if (status < 0) {
                     break;
                 }
@@ -989,70 +980,57 @@ static void* run_mixer_thread(void* argument) {
             frames_left -= frames_written;
         }
 
-        double delta_time = static_cast<double>(system->specification.frames) /
-                            static_cast<double>(system->specification.sample_rate);
-        system->time += delta_time;
+        double delta_time = static_cast<double>(specification.frames) /
+                            static_cast<double>(specification.sample_rate);
+        time += delta_time;
 
         END_MONITORING(audio);
     }
 
-    close_all_streams(&system->stream_manager);
+    close_all_streams(&stream_manager);
 
     // Clear up mixer data.
-    close_device(system->pcm_handle);
-    DEALLOCATE_ARRAY(system->mixed_samples);
-    DEALLOCATE_ARRAY(system->devicebound_samples);
+    close_device(pcm_handle);
+    DEALLOCATE_ARRAY(mixed_samples);
+    DEALLOCATE_ARRAY(devicebound_samples);
 
     return nullptr;
 }
 
-System* startup() {
-    System* system;
-
-    system = ALLOCATE_STRUCT(System);
-    if (!system) {
-        LOG_ERROR("Failed to allocate memory for the audio system.");
-        return nullptr;
-    }
-    CLEAR_STRUCT(system);
-
-    atomic_flag_test_and_set(&system->quit);
-    pthread_create(&system->thread, nullptr, run_mixer_thread, system);
-
-    return system;
+bool startup() {
+    atomic_flag_test_and_set(&quit);
+    int result = pthread_create(&thread, nullptr, run_mixer_thread, nullptr);
+    return result == 0;
 }
 
-void shutdown(System* system) {
+void shutdown() {
     // Signal the mixer thread to quit and wait here for it to finish.
-    atomic_flag_clear(&system->quit);
-    pthread_join(system->thread, nullptr);
-
-    // Destroy the system.
-    DEALLOCATE_STRUCT(system);
+    atomic_flag_clear(&quit);
+    pthread_join(thread, nullptr);
 }
 
-void play_once(System* system, const char* filename, float volume) {
+void play_once(const char* filename, float volume) {
     Message message;
     message.code = Message::Code::Play_Once;
     copy_string(message.play_once.filename, filename,
                 sizeof message.play_once.filename);
     message.play_once.volume = volume;
-    enqueue_message(&system->message_queue, &message);
+    enqueue_message(&message_queue, &message);
 }
 
-static StreamId generate_stream_id(System* system) {
-    system->stream_id_seed += 1;
-    if (system->stream_id_seed == 0) {
+static StreamId generate_stream_id() {
+    stream_id_seed += 1;
+    if (stream_id_seed == 0) {
         // Reserve stream ids of 0 for streams that don't need to be
         // identified or referred to outside of the audio system.
-        system->stream_id_seed = 1;
+        stream_id_seed = 1;
     }
-    return system->stream_id_seed;
+    return stream_id_seed;
 }
 
-void start_stream(System* system, const char* filename, float volume,
+void start_stream(const char* filename, float volume,
                   StreamId* out_stream_id) {
-    StreamId stream_id = generate_stream_id(system);
+    StreamId stream_id = generate_stream_id();
 
     Message message;
     message.code = Message::Code::Start_Stream;
@@ -1060,16 +1038,16 @@ void start_stream(System* system, const char* filename, float volume,
                 sizeof message.start_stream.filename);
     message.start_stream.stream_id = stream_id;
     message.start_stream.volume = volume;
-    enqueue_message(&system->message_queue, &message);
+    enqueue_message(&message_queue, &message);
 
     *out_stream_id = stream_id;
 }
 
-void stop_stream(System* system, StreamId stream_id) {
+void stop_stream(StreamId stream_id) {
     Message message;
     message.code = Message::Code::Stop_Stream;
     message.stop_stream.stream_id = stream_id;
-    enqueue_message(&system->message_queue, &message);
+    enqueue_message(&message_queue, &message);
 }
 
 } // namespace audio
