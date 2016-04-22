@@ -2,6 +2,7 @@
 
 #include "sized_types.h"
 #include "logging.h"
+#include "string_utilities.h"
 #include "evdev_text.h"
 
 #include <X11/keysym.h>
@@ -34,14 +35,7 @@
 #define CHECK_BIT(array, n) \
     (((1UL << ((n) % (sizeof(long) * 8))) & ((array)[(n) / (sizeof(long) * 8)])) != 0)
 
-static bool strings_match(const char *a, const char *b) {
-    if (!a || !b) {
-        return false;
-    }
-    return std::strcmp(a, b) == 0;
-}
-
-static bool starts_with(const char *string, const char *token) {
+static bool starts_with(const char* string, const char* token) {
     while (*token) {
         if (*token++ != *string++) {
             return false;
@@ -69,7 +63,7 @@ struct KeyboardState {
     int edge_counts[KEY_MAPPING_COUNT];
 };
 
-static void setup_keyboard_state(KeyboardState *keyboard_state) {
+static void setup_keyboard_state(KeyboardState* keyboard_state) {
     u32 map[KEY_MAPPING_COUNT];
     map[KEY_MAPPING_LEFT]  = XK_Left;
     map[KEY_MAPPING_UP]    = XK_Up;
@@ -82,7 +76,7 @@ static void setup_keyboard_state(KeyboardState *keyboard_state) {
     ARRAY_CLEAR(keyboard_state->edge_counts);
 }
 
-static void press_key(KeyboardState *keyboard_state, u32 key_symbol) {
+static void press_key(KeyboardState* keyboard_state, u32 key_symbol) {
     for (int i = 0; i < KEY_MAPPING_COUNT; ++i) {
         if (keyboard_state->key_map[i] == key_symbol) {
             keyboard_state->keys_pressed[i] = true;
@@ -91,7 +85,7 @@ static void press_key(KeyboardState *keyboard_state, u32 key_symbol) {
     }
 }
 
-static void release_key(KeyboardState *keyboard_state, u32 key_symbol) {
+static void release_key(KeyboardState* keyboard_state, u32 key_symbol) {
     for (int i = 0; i < KEY_MAPPING_COUNT; ++i) {
         if (keyboard_state->key_map[i] == key_symbol) {
             keyboard_state->keys_pressed[i] = false;
@@ -100,13 +94,13 @@ static void release_key(KeyboardState *keyboard_state, u32 key_symbol) {
     }
 }
 
-static void update_key_change_counts(KeyboardState *keyboard_state) {
+static void update_key_change_counts(KeyboardState* keyboard_state) {
     for (int i = 0; i < KEY_MAPPING_COUNT; ++i) {
         keyboard_state->edge_counts[i] += 1;
     }
 }
 
-static bool is_key_down(KeyboardState *keyboard_state, KeyMapping key) {
+static bool is_key_down(KeyboardState* keyboard_state, KeyMapping key) {
     return keyboard_state->keys_pressed[key];
 }
 
@@ -140,12 +134,12 @@ struct DeviceCollection {
     int device_count;
 };
 
-static void close_device(Device *device) {
+static void close_device(Device* device) {
     close(device->file);
     LOG_DEBUG("input device #%lu closed", device->device_number);
 }
 
-static bool evdev_setup_device(Device *device) {
+static bool evdev_setup_device(Device* device) {
     // Get basic identifying information for the device.
     if (ioctl(device->file, EVIOCGNAME(sizeof device->name), device->name) < 0) {
         // @Incomplete: log error
@@ -264,7 +258,7 @@ static bool evdev_setup_device(Device *device) {
     return true;
 }
 
-static bool js_setup_device(Device *device) {
+static bool js_setup_device(Device* device) {
     s8 axis_count;
     s8 button_count;
     if (ioctl(device->file, JSIOCGAXES, &axis_count) < 0 ||
@@ -288,8 +282,8 @@ static bool js_setup_device(Device *device) {
                 LOG_DEBUG("has axis: 0x%x", event.number);
                 device->absolute_map[event.number] = device->axis_count;
                 device->axis_count += 1;
-            } break;
-
+                break;
+            }
             case JS_EVENT_BUTTON: {
                 if (device->button_count >= button_count) {
                     polling = false;
@@ -298,14 +292,15 @@ static bool js_setup_device(Device *device) {
                 LOG_DEBUG("has button: 0x%x", event.number);
                 device->button_map[event.number] = device->button_count;
                 device->button_count += 1;
-            } break;
+                break;
+            }
         }
     }
 
     return true;
 }
 
-static void add_device(DeviceCollection *device_collection, udev_device *device) {
+static void add_device(DeviceCollection* device_collection, udev_device* device) {
     if (device_collection->device_count >= DEVICE_COLLECTION_MAX) {
         assert(!"too many input devices!");
         return;
@@ -313,9 +308,9 @@ static void add_device(DeviceCollection *device_collection, udev_device *device)
 
     // whichever class or classes udev categorizes it as
     bool is_joystick = false;
-    const char *subsystem = udev_device_get_subsystem(device);
-    if (strings_match(subsystem, "input")) {
-        const char *val;
+    const char* subsystem = udev_device_get_subsystem(device);
+    if (subsystem && strings_match(subsystem, "input")) {
+        const char* val;
 
         val = udev_device_get_property_value(device, "ID_INPUT_JOYSTICK");
         if (val && strings_match(val, "1")) {
@@ -324,7 +319,7 @@ static void add_device(DeviceCollection *device_collection, udev_device *device)
 
         // Fall back to old-style input classes.
         val = udev_device_get_property_value(device, "ID_CLASS");
-        if (strings_match(val, "joystick")) {
+        if (val && strings_match(val, "joystick")) {
             is_joystick = true;
         }
     }
@@ -337,7 +332,7 @@ static void add_device(DeviceCollection *device_collection, udev_device *device)
 
     // Open the device file.
 
-    const char *device_path = udev_device_get_devnode(device);
+    const char* device_path = udev_device_get_devnode(device);
     int file = open(device_path, O_RDONLY | O_NONBLOCK, 0);
     if (file < 0) {
         // @Incomplete: log error
@@ -351,7 +346,7 @@ static void add_device(DeviceCollection *device_collection, udev_device *device)
 
     bool device_setup = false;
 
-    const char *system_name = udev_device_get_sysname(device);
+    const char* system_name = udev_device_get_sysname(device);
     if (starts_with(system_name, "event")) {
         // Use the device under the evdev system.
         device_setup = evdev_setup_device(&added_device);
@@ -368,7 +363,7 @@ static void add_device(DeviceCollection *device_collection, udev_device *device)
     }
 }
 
-static void remove_device(DeviceCollection *device_collection, udev_device *device) {
+static void remove_device(DeviceCollection* device_collection, udev_device* device) {
     if (device_collection->device_count <= 0) {
         assert(!"no devices to remove");
         return;
@@ -376,7 +371,7 @@ static void remove_device(DeviceCollection *device_collection, udev_device *devi
 
     dev_t device_number = udev_device_get_devnum(device);
     for (int i = 0; i < device_collection->device_count; ++i) {
-        Device *search_device = device_collection->devices + i;
+        Device* search_device = device_collection->devices + i;
         if (device_number == search_device->device_number) {
             close_device(search_device);
             int final = device_collection->device_count - 1;
@@ -389,19 +384,19 @@ static void remove_device(DeviceCollection *device_collection, udev_device *devi
     }
 }
 
-static void force_detect_devices(udev *context, DeviceCollection *device_collection) {
+static void force_detect_devices(udev* context, DeviceCollection* device_collection) {
     // Create a list of the devices in the 'input' subsystem.
-    udev_enumerate *enumerator = udev_enumerate_new(context);
+    udev_enumerate* enumerator = udev_enumerate_new(context);
     udev_enumerate_add_match_subsystem(enumerator, "input");
     udev_enumerate_scan_devices(enumerator);
-    udev_list_entry *devices = udev_enumerate_get_list_entry(enumerator);
+    udev_list_entry* devices = udev_enumerate_get_list_entry(enumerator);
 
     // Iterate over each entry in the list and add it to the collection.
 
-    udev_list_entry *entry;
+    udev_list_entry* entry;
     udev_list_entry_foreach(entry, devices) {
-        const char *path = udev_list_entry_get_name(entry);
-        udev_device *device = udev_device_new_from_syspath(context, path);
+        const char* path = udev_list_entry_get_name(entry);
+        udev_device* device = udev_device_new_from_syspath(context, path);
         add_device(device_collection, device);
         udev_device_unref(device);
     }
@@ -409,7 +404,7 @@ static void force_detect_devices(udev *context, DeviceCollection *device_collect
     udev_enumerate_unref(enumerator);
 }
 
-static void check_device_monitor(udev_monitor *device_monitor, DeviceCollection *device_collection) {
+static void check_device_monitor(udev_monitor* device_monitor, DeviceCollection* device_collection) {
     // the file descriptor for the monitor
     int fd = udev_monitor_get_fd(device_monitor);
     assert(fd >= 0); // fd is supposed to be guaranteed valid but assert to be sure
@@ -421,17 +416,20 @@ static void check_device_monitor(udev_monitor *device_monitor, DeviceCollection 
     timeval timeout;
     timeout.tv_sec = 0;
     timeout.tv_usec = 0;
-    int result = select(fd + 1, &fds, NULL, NULL, &timeout);
+    int result = select(fd + 1, &fds, nullptr, nullptr, &timeout);
 
     // Check if the file descriptor has received data.
     if (result > 0 && FD_ISSET(fd, &fds)) {
-        udev_device *device = udev_monitor_receive_device(device_monitor);
+        udev_device* device = udev_monitor_receive_device(device_monitor);
         if (!device) {
             LOG_ERROR("A device change occurred, but info about it was not able to be obtained.");
         }
 
-        const char *action = udev_device_get_action(device);
-        if (strings_match(action, "add")) {
+        const char* action = udev_device_get_action(device);
+        if (!action) {
+            LOG_ERROR("A device change occurred, but the type of change was not discernible.");
+
+        } else if (strings_match(action, "add")) {
             add_device(device_collection, device);
 
         } else if (strings_match(action, "remove")) {
@@ -457,15 +455,15 @@ struct Controller {
     float axes[USER_AXIS_COUNT];
 };
 
-bool is_button_pressed(Controller *controller, UserButton button) {
+bool is_button_pressed(Controller* controller, UserButton button) {
     return controller->buttons[button];
 }
 
-bool is_button_released(Controller *controller, UserButton button) {
+bool is_button_released(Controller* controller, UserButton button) {
     return controller->buttons[button];
 }
 
-bool is_button_tapped(Controller *controller, UserButton button) {
+bool is_button_tapped(Controller* controller, UserButton button) {
     if (controller->buttons[button]) {
         // when the button is pressed and has been for a single frame only
         // (hasn't been incremented to 1 or greater, yet)
@@ -475,11 +473,11 @@ bool is_button_tapped(Controller *controller, UserButton button) {
     }
 }
 
-float get_axis(Controller *controller, UserAxis axis) {
+float get_axis(Controller* controller, UserAxis axis) {
     return controller->axes[axis];
 }
 
-static void update_controller_from_keyboard_state(Controller *controller, KeyboardState *keyboard_state) {
+static void update_controller_from_keyboard_state(Controller* controller, KeyboardState* keyboard_state) {
     float dx = 0.0f;
     float dy = 0.0f;
     if (is_key_down(keyboard_state, KEY_MAPPING_LEFT)) {
@@ -508,87 +506,78 @@ static void update_controller_from_keyboard_state(Controller *controller, Keyboa
 }
 
 #if 0
-static void update_controller_from_gamepad(Controller *controller, Device *device) {
+static void update_controller_from_gamepad(Controller* controller, Device* device) {
     // @Incomplete
 }
 #endif
 
 // Global Input System Functions...............................................
 
-struct System {
+namespace {
     DeviceCollection device_collection;
     KeyboardState keyboard_state;
-    udev *context;
-    udev_monitor *device_monitor;
+    udev* context;
+    udev_monitor* device_monitor;
     Controller controller;
-};
+}
 
-System *startup() {
-    System *system = static_cast<System *>(std::calloc(1, sizeof(System)));
-    if (!system) {
-        LOG_ERROR("Not enough memory to allocate the system.");
-        return NULL;
-    }
-
+bool startup() {
     // create library interface
-    udev *udev = udev_new();
+    udev* udev = udev_new();
     if (!udev) {
         LOG_ERROR("Could not create udev library context for gamepad input.");
-        shutdown(system);
-        return NULL;
+        shutdown();
+        return false;
     }
-    system->context = udev;
+    context = udev;
 
     // create monitor for device-changed notifications
-    udev_monitor *device_monitor = udev_monitor_new_from_netlink(udev, "udev");
-    if (!device_monitor) {
+    udev_monitor* monitor = udev_monitor_new_from_netlink(udev, "udev");
+    if (!monitor) {
         LOG_ERROR("Could not create a monitor for detecting device changes.");
-        shutdown(system);
-        return NULL;
+        shutdown();
+        return false;
     }
-    system->device_monitor = device_monitor;
+    device_monitor = monitor;
 
-    udev_monitor_filter_add_match_subsystem_devtype(device_monitor, "input", NULL);
+    udev_monitor_filter_add_match_subsystem_devtype(device_monitor, "input", nullptr);
     udev_monitor_enable_receiving(device_monitor);
 
-    force_detect_devices(system->context, &system->device_collection);
+    force_detect_devices(context, &device_collection);
 
-    setup_keyboard_state(&system->keyboard_state);
+    setup_keyboard_state(&keyboard_state);
 
-    return system;
+    return true;
 }
 
-void shutdown(System *system) {
-    if (system) {
-        for (int i = 0; i < system->device_collection.device_count; ++i) {
-            close_device(system->device_collection.devices + i);
-        }
-        if (system->device_monitor) {
-            udev_monitor_unref(system->device_monitor);
-        }
-        if (system->context) {
-            udev_unref(system->context);
-        }
-        std::free(system);
+void shutdown() {
+    for (int i = 0; i < device_collection.device_count; ++i) {
+        close_device(device_collection.devices + i);
+    }
+    if (device_monitor) {
+        udev_monitor_unref(device_monitor);
+    }
+    if (context) {
+        udev_unref(context);
     }
 }
 
-void poll(System *system) {
-    check_device_monitor(system->device_monitor, &system->device_collection);
-    update_controller_from_keyboard_state(&system->controller, &system->keyboard_state);
-    update_key_change_counts(&system->keyboard_state);
+void poll() {
+    check_device_monitor(device_monitor, &device_collection);
+    update_controller_from_keyboard_state(&controller, &keyboard_state);
+    update_key_change_counts(&keyboard_state);
 }
 
-void on_key_press(System *system, u32 key_symbol) {
-    press_key(&system->keyboard_state, key_symbol);
+void on_key_press(u32 key_symbol) {
+    press_key(&keyboard_state, key_symbol);
 }
 
-void on_key_release(System *system, u32 key_symbol) {
-    release_key(&system->keyboard_state, key_symbol);
+void on_key_release(u32 key_symbol) {
+    release_key(&keyboard_state, key_symbol);
 }
 
-Controller *get_controller(System *system) {
-    return &system->controller;
+Controller* get_controller() {
+    return &controller;
 }
 
 } // namespace input

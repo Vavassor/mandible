@@ -1,5 +1,4 @@
-#ifndef LOGGING_H_
-#define LOGGING_H_
+#pragma once
 
 namespace logging {
 	enum class Level {
@@ -8,7 +7,7 @@ namespace logging {
 		Debug,
 	};
 
-	void add_message(Level level, const char *format, ...);
+	void add_message(Level level, const char* format, ...);
 }
 
 #ifdef NDEBUG
@@ -18,5 +17,3 @@ namespace logging {
 #endif
 
 #define	LOG_ERROR(format, ...) logging::add_message(logging::Level::Error, (format), ##__VA_ARGS__)
-
-#endif
