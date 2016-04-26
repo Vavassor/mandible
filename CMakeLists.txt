@@ -5,8 +5,10 @@ project (Mandible)
 set (INCLUDES
     atomic.h
     audio.h
+    draw.h
     evdev_text.h
     font.h
+    game.h
     gl_core_3_3.h
     gl_shader.h
     glx_extensions.h
@@ -26,8 +28,10 @@ source_group ("Header Files" FILES ${INCLUDES})
 set (SOURCES
     atomic.cpp
     audio.cpp
+    draw.cpp
     evdev_text.cpp
     font.cpp
+    game.cpp
     gl_core_3_3.c
     gl_shader.cpp
     glx_extensions.cpp

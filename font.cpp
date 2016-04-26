@@ -2,9 +2,10 @@
 
 #include <cstdlib>
 #include <cstdio>
-#include <cstring>
 #include <cstdint>
 #include <cassert>
+
+#include "string_utilities.h"
 
 #define ALLOCATE(type, count) \
     static_cast<type*>(std::malloc(sizeof(type) * (count)))
@@ -28,7 +29,7 @@ static inline uint32_t hash_bj6(uint32_t a) {
 }
 
 // Thomas Wang's 64-bit hash function
-uint64_t hash_wang(uint64_t k) {
+static inline uint64_t hash_wang(uint64_t k) {
     k = ~k + (k << 21); // k = (k << 21) - k - 1;
     k =  k ^ (k >> 24);
     k = (k + (k << 3)) + (k << 8); // k * 265
@@ -43,7 +44,7 @@ static inline int hash_codepoint(char32_t c, int n) {
     return hash_bj6(c) % n;
 }
 
-static inline void wrap_increment(int* s, int n) {
+static inline void cycle_increment(int* s, int n) {
     *s = (*s + 1) % n;
 }
 
@@ -64,7 +65,7 @@ static int character_map_insert(char32_t* map, int map_count, char32_t value) {
     // open spot is found.
     int probe = hash_codepoint(value, map_count);
     while (map[probe] != INVALID_CODEPOINT) {
-        wrap_increment(&probe, map_count);
+        cycle_increment(&probe, map_count);
     }
     map[probe] = value;
     return probe;
@@ -82,7 +83,7 @@ static int character_map_search(char32_t* map, int map_count, char32_t value) {
         if (map[probe] == value) {
             return probe;
         }
-        wrap_increment(&probe, map_count);
+        cycle_increment(&probe, map_count);
     }
     return -1;
 }
@@ -104,7 +105,7 @@ static int kerning_table_insert(BmFont::KerningPair* table, int table_count,
                                 char32_t a, char32_t b, int amount) {
     int probe = hash_pair(a, b, table_count);
     while (table[probe].first != INVALID_CODEPOINT) {
-        wrap_increment(&probe, table_count);
+        cycle_increment(&probe, table_count);
     }
     table[probe].first = a;
     table[probe].second = b;
@@ -122,9 +123,65 @@ static int kerning_table_search(BmFont::KerningPair* table, int table_count,
         if (table[probe].first == a && table[probe].second == b) {
             return probe;
         }
-        wrap_increment(&probe, table_count);
+        cycle_increment(&probe, table_count);
     }
     return -1;
+}
+
+// General String Search Functions.............................................
+
+static bool memory_matches(const void* a, const void* b, std::size_t n) {
+    assert(a);
+    assert(b);
+    const unsigned char* p1 = static_cast<const unsigned char*>(a);
+    const unsigned char* p2 = static_cast<const unsigned char*>(b);
+    while (n--) {
+        if (*p1 != *p2) {
+            return false;
+        } else {
+            p1++;
+            p2++;
+        }
+    }
+    return true;
+}
+
+static char* find_char(const char* s, char c) {
+    assert(s);
+    while (*s != c) {
+        if (*s++ == '\0') {
+            return nullptr;
+        }
+    }
+    return const_cast<char*>(s);
+}
+
+static char* find_string(const char* a, const char* b) {
+    assert(a);
+    assert(b);
+    std::size_t n = string_size(b);
+    while (*a) {
+        if (memory_matches(a, b, n)) {
+            return const_cast<char*>(a);
+        }
+        a++;
+    }
+    return nullptr;
+}
+
+static std::size_t count_span_without_chars(const char* s, const char* set) {
+    assert(s);
+    assert(set);
+    std::size_t count = 0;
+    while (*s) {
+        if (find_char(set, *s)) {
+            return count;
+        } else {
+            s++;
+            count++;
+        }
+    }
+    return count;
 }
 
 // Text File Reader Functions..................................................
@@ -135,35 +192,35 @@ struct Reader {
 };
 
 static void seek_in_line(Reader* reader, const char* target) {
-    reader->current = std::strstr(reader->current, target);
+    reader->current = find_string(reader->current, target);
 }
 
 static void seek_next_line(Reader* reader) {
-    reader->current = std::strchr(reader->current, '\n');
+    reader->current = find_char(reader->current, '\n');
 }
 
 static int get_integer(Reader* reader, const char* tag) {
-    char* attribute = std::strstr(reader->current, tag);
+    char* attribute = find_string(reader->current, tag);
     if (!attribute) {
         reader->read_error = true;
         return 0;
     }
-    attribute += std::strlen(tag) + 1;
+    attribute += string_size(tag) + 1;
     return std::atoi(attribute);
 }
 
 static void seek_to_attribute(Reader* reader, const char* tag) {
-    char* attribute = std::strstr(reader->current, tag);
+    char* attribute = find_string(reader->current, tag);
     if (!attribute) {
         reader->read_error = true;
     } else {
-        attribute += std::strlen(tag) + 1;
+        attribute += string_size(tag) + 1;
         reader->current = attribute;
     }
 }
 
 static std::size_t get_attribute_size(Reader* reader) {
-    return std::strcspn(reader->current, " \n");
+    return count_span_without_chars(reader->current, " \n");
 }
 
 // BmFont Functions............................................................
@@ -228,8 +285,7 @@ bool bm_font_load(BmFont* font, const char* filename) {
     }
     filename_size -= 1;
     font->image.filename = ALLOCATE(char, filename_size);
-    std::memcpy(font->image.filename, reader.current + 1, filename_size - 1);
-    font->image.filename[filename_size - 1] = '\0';
+    copy_string(font->image.filename, reader.current + 1, filename_size);
     seek_next_line(&reader);
 
     // Char section

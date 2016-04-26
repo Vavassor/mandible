@@ -1,6 +1,6 @@
 #pragma once
 
-namespace arandom {
+namespace random {
 
 void seed(unsigned long seed);
 unsigned long generate();

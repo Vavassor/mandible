@@ -1,6 +1,6 @@
 #include "random.h"
 
-namespace arandom {
+namespace random {
 
 // Linear Congruential Generator
 namespace lcg {
@@ -24,7 +24,8 @@ static unsigned long generate() {
 
 } // namespace lcg
 
-// Mersenne Twister
+// Mersenne Twister random number generator
+// adapted from a public domain implementation by Michael Brundage
 namespace mt {
 
 #define BUFFER_LENGTH 624
