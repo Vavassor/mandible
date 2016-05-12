@@ -26,6 +26,13 @@ void shutdown();
 void poll();
 void on_key_press(u32 key_symbol);
 void on_key_release(u32 key_symbol);
+void on_button_press(unsigned int button);
+void on_button_release(unsigned int button);
+void on_mouse_move(int x, int y);
 Controller* get_controller();
+
+void get_mouse_position(int* x, int* y);
+bool get_mouse_pressed();
+bool get_mouse_clicked();
 
 } // namespace input

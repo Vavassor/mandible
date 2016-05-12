@@ -2,6 +2,7 @@
 
 #include "unicode.h"
 #include "string_utilities.h"
+#include "logging.h"
 
 #include <alloca.h> // @Incomplete: remove dependency on linux-specific stack allocation
 
@@ -114,32 +115,27 @@ void draw_subimage(Canvas* canvas, Atlas* atlas, int cx, int cy,
     }
 }
 
+static void clip_to_bounds(int* position, int* length, int clip_min, int clip_max) {
+    int x = *position;
+    int d = *length;
+    if (x < clip_min) {
+        d -= clip_min - x;
+        if (d > 0) {
+            x = clip_min;
+        }
+    }
+    int extra_length = (x + d) - clip_max;
+    if (extra_length > 0) {
+        d -= extra_length;
+    }
+    *position = x;
+    *length = d;
+}
+
 void draw_rectangle(Canvas* canvas, int cx, int cy, int width, int height,
                     u32 colour) {
-    if (cx < 0) {
-        width += cx;
-        if (width > 0) {
-            cx = 0;
-        }
-    }
-
-    int extra_width = (cx + width) - canvas->width;
-    if (extra_width > 0) {
-        width -= extra_width;
-    }
-
-    if (cy < 0) {
-        height += cy;
-        if (height > 0) {
-            cy = 0;
-        }
-    }
-
-    int extra_height = (cy + height) - canvas->height;
-    if (extra_height > 0) {
-        height -= extra_height;
-    }
-
+    clip_to_bounds(&cx, &width, 0, canvas->width);
+    clip_to_bounds(&cy, &height, 0, canvas->height);
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             set_pixel(canvas, cx + x, cy + y, colour);
@@ -149,30 +145,8 @@ void draw_rectangle(Canvas* canvas, int cx, int cy, int width, int height,
 
 void draw_rectangle_transparent(Canvas* canvas, int cx, int cy,
                                 int width, int height, u32 colour) {
-    if (cx < 0) {
-        width += cx;
-        if (width > 0) {
-            cx = 0;
-        }
-    }
-
-    int extra_width = (cx + width) - canvas->width;
-    if (extra_width > 0) {
-        width -= extra_width;
-    }
-
-    if (cy < 0) {
-        height += cy;
-        if (height > 0) {
-            cy = 0;
-        }
-    }
-
-    int extra_height = (cy + height) - canvas->height;
-    if (extra_height > 0) {
-        height -= extra_height;
-    }
-
+    clip_to_bounds(&cx, &width, 0, canvas->width);
+    clip_to_bounds(&cy, &height, 0, canvas->height);
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             set_pixel_alpha(canvas, cx + x, cy + y, colour);
@@ -180,27 +154,57 @@ void draw_rectangle_transparent(Canvas* canvas, int cx, int cy,
     }
 }
 
-static int clip_test(int q, int p, double* te, double* tl) {
+static void draw_horizontal_line(Canvas* canvas, int cx, int cy, int length,
+                                 u32 colour) {
+    if (cy < 0 || cy >= canvas->height) {
+        return;
+    }
+    clip_to_bounds(&cx, &length, 0, canvas->width);
+    for (int x = 0; x < length; ++x) {
+        set_pixel(canvas, cx + x, cy, colour);
+    }
+}
+
+static void draw_vertical_line(Canvas* canvas, int cx, int cy, int length,
+                               u32 colour) {
+    if (cx < 0 || cx >= canvas->width) {
+        return;
+    }
+    clip_to_bounds(&cy, &length, 0, canvas->height);
+    for (int y = 0; y < length; ++y) {
+        set_pixel(canvas, cx, cy + y, colour);
+    }
+}
+
+void draw_rectangle_outline(Canvas* canvas, int cx, int cy,
+                            int width, int height, u32 colour) {
+    draw_horizontal_line(canvas, cx, cy, width, colour);
+    draw_horizontal_line(canvas, cx, cy + height, width, colour);
+    draw_vertical_line(canvas, cx, cy, height, colour);
+    draw_vertical_line(canvas, cx + width, cy, height, colour);
+}
+
+static bool clip_test(int q, int p, double* te, double* tl) {
     if (p == 0) {
         return q < 0;
     }
     double t = static_cast<double>(q) / p;
     if (p > 0) {
         if (t > *tl) {
-            return 0;
+            return false;
         }
         if (t > *te) {
             *te = t;
         }
     } else {
         if (t < *te) {
-            return 0;
+            return false;
         }
         if (t < *tl) {
             *tl = t;
         }
     }
-    return 1;
+    return true;
 }
 
 static int sign(int x) {
@@ -226,6 +230,12 @@ void draw_line(Canvas* canvas, int x1, int y1, int x2, int y2, u32 colour) {
         int dx = x2 - x1;
         int dy = y2 - y1;
 
+        if ((dx == 0 && dy == 0) &&
+            (x1 < x_min || x1 > x_max || y1 < y_min || y1 > y_max)) {
+            // The line is a point and is outside the canvas, so don't draw it.
+            return;
+        }
+
         double te = 0.0; // entering
         double tl = 1.0; // leaving
         if (clip_test(x_min - x1,  dx, &te, &tl) &&
@@ -240,6 +250,9 @@ void draw_line(Canvas* canvas, int x1, int y1, int x2, int y2, u32 colour) {
                 x1 += te * dx;
                 y1 += te * dy;
             }
+        } else {
+            // The line must be entirely outside rectangle, so skip drawing it.
+            return;
         }
     }
 
@@ -251,8 +264,8 @@ void draw_line(Canvas* canvas, int x1, int y1, int x2, int y2, u32 colour) {
         int sdy = sign(y2 - y1); // sign of delta y
         int x = adx / 2;
         int y = ady / 2;
-        int px = x1;             // plot x
-        int py = y1;             // plot y
+        int px = x1; // plot x
+        int py = y1; // plot y
 
         set_pixel(canvas, px, py, colour);
 

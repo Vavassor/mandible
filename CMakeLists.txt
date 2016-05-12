@@ -3,6 +3,7 @@ project (Mandible)
 
 # ----- INCLUDE FILES -----
 set (INCLUDES
+    ani_file.h
     atomic.h
     audio.h
     draw.h
@@ -14,7 +15,9 @@ set (INCLUDES
     glx_extensions.h
     input.h
     logging.h
+    memory.h
     monitoring.h
+    posix_errors.h
     random.h
     sized_types.h
     stb_image.h
@@ -26,6 +29,7 @@ source_group ("Header Files" FILES ${INCLUDES})
 
 # ----- SOURCE FILES -----
 set (SOURCES
+    ani_file.cpp
     atomic.cpp
     audio.cpp
     draw.cpp
@@ -37,8 +41,10 @@ set (SOURCES
     glx_extensions.cpp
     input.cpp
     logging.cpp
-    monitoring.cpp
     main.cpp
+    memory.cpp
+    monitoring.cpp
+    posix_errors.cpp
     random.cpp
     stb_vorbis.c
     string_utilities.cpp

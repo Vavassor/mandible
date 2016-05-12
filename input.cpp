@@ -511,11 +511,49 @@ static void update_controller_from_gamepad(Controller* controller, Device* devic
 }
 #endif
 
+// Mouse Functions.............................................................
+
+#define BUTTON_COUNT 2
+
+struct MouseState {
+    int x, y;
+    bool buttons_pressed[BUTTON_COUNT];
+    int edge_counts[BUTTON_COUNT];
+};
+
+static void press_button(MouseState* mouse_state, unsigned int button) {
+    if (button == 1 || button == 2) {
+        int button_index = button - 1;
+        mouse_state->buttons_pressed[button_index] = true;
+        mouse_state->edge_counts[button_index] = 0;
+    }
+}
+
+static void release_button(MouseState* mouse_state, unsigned int button) {
+    if (button == 1 || button == 2) {
+        int button_index = button - 1;
+        mouse_state->buttons_pressed[button_index] = false;
+        mouse_state->edge_counts[button_index] = 0;
+    }
+}
+
+static void move_mouse(MouseState* mouse_state, int x, int y) {
+    mouse_state->x = x;
+    mouse_state->y = y;
+}
+
+static void update_button_change_counts(MouseState* mouse_state) {
+    for (int i = 0; i < BUTTON_COUNT; ++i) {
+        mouse_state->edge_counts[i] += 1;
+    }
+}
+
 // Global Input System Functions...............................................
 
 namespace {
     DeviceCollection device_collection;
     KeyboardState keyboard_state;
+    MouseState mouse_state;
     udev* context;
     udev_monitor* device_monitor;
     Controller controller;
@@ -566,6 +604,7 @@ void poll() {
     check_device_monitor(device_monitor, &device_collection);
     update_controller_from_keyboard_state(&controller, &keyboard_state);
     update_key_change_counts(&keyboard_state);
+    update_button_change_counts(&mouse_state);
 }
 
 void on_key_press(u32 key_symbol) {
@@ -576,8 +615,33 @@ void on_key_release(u32 key_symbol) {
     release_key(&keyboard_state, key_symbol);
 }
 
+void on_button_press(unsigned int button) {
+    press_button(&mouse_state, button);
+}
+
+void on_button_release(unsigned int button) {
+    release_button(&mouse_state, button);
+}
+
+void on_mouse_move(int x, int y) {
+    move_mouse(&mouse_state, x, y);
+}
+
 Controller* get_controller() {
     return &controller;
+}
+
+void get_mouse_position(int* x, int* y) {
+    *x = mouse_state.x;
+    *y = mouse_state.y;
+}
+
+bool get_mouse_pressed() {
+    return mouse_state.buttons_pressed[0];
+}
+
+bool get_mouse_clicked() {
+    return mouse_state.buttons_pressed[0] && mouse_state.edge_counts[0] == 0;
 }
 
 } // namespace input

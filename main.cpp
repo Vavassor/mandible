@@ -6,6 +6,7 @@
 #include "game.h"
 #include "draw.h"
 #include "string_utilities.h"
+#include "posix_errors.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -205,13 +206,6 @@ static void set_icons(Display* display, Window window, Atom net_wm_icon,
     std::free(icon_buffer);
 }
 
-static int error_handler(Display* display, XErrorEvent* event) {
-    char text[128];
-    XGetErrorText(display, event->error_code, text, sizeof text);
-    LOG_ERROR("%s", text);
-    return 0;
-}
-
 struct Mesh {
     GLuint buffers[2];
     GLuint vertex_array;
@@ -253,11 +247,18 @@ static inline void cycle_increment(int* s, int n) {
 }
 
 #if 0
-// saved code for reference
+// code saved for reference
 static inline void cycle_decrement(int* s, int n) {
     *s = (*s + (n - 1)) % n;
 }
 #endif
+
+static int handle_x_error(Display* display, XErrorEvent* event) {
+    char text[128];
+    XGetErrorText(display, event->error_code, text, sizeof text);
+    LOG_ERROR("%s", text);
+    return 0;
+}
 
 int main(int argc, char** argv) {
     const int canvas_width = 480;
@@ -265,9 +266,7 @@ int main(int argc, char** argv) {
     const int pixel_scale = 3;
     const char* title = "mandible";
     const double frame_frequency = 1.0 / 60.0;
-    const char* icon_names[] = {
-        "Icon.png",
-    };
+    const char* icon_names[] = { "Icon.png", };
 
     bool vertical_synchronization = true;
     bool show_monitoring_overlay = true;
@@ -307,7 +306,12 @@ int main(int argc, char** argv) {
     Clock clock;
     Canvas canvas;
 
-    XSetErrorHandler(error_handler);
+    if (!register_posix_signal_handlers()) {
+        LOG_ERROR("Was not able to set the POSIX signal handlers.");
+        return EXIT_FAILURE;
+    }
+
+    XSetErrorHandler(handle_x_error);
 
     // Connect to the X server
     display = XOpenDisplay(nullptr);
@@ -349,7 +353,9 @@ int main(int argc, char** argv) {
                                visual->visual, AllocNone);
     XSetWindowAttributes window_attributes = {};
     window_attributes.colormap = colormap;
-    window_attributes.event_mask = KeyPressMask | KeyReleaseMask;
+    window_attributes.event_mask = KeyPressMask | KeyReleaseMask |
+                                   ButtonPressMask | ButtonReleaseMask |
+                                   PointerMotionMask;
     window = XCreateWindow(display, DefaultRootWindow(display),
                            0, 0, scaled_width, scaled_height, 0, visual->depth,
                            InputOutput, visual->visual,
@@ -552,9 +558,6 @@ int main(int argc, char** argv) {
     monitoring::startup();
     input::startup();
     audio::startup();
-
-    initialise_clock(&clock);
-
     game::startup();
 
     // Enable Vertical Synchronisation.
@@ -566,6 +569,8 @@ int main(int argc, char** argv) {
 
     LOG_DEBUG("vertical synchronization: %s",
               (vertical_synchronization) ? "true" : "false");
+
+    initialise_clock(&clock);
 
     // Flush the connection to the display before starting the main loop.
     XSync(display, False);
@@ -608,6 +613,7 @@ int main(int argc, char** argv) {
             glBindTexture(GL_TEXTURE_2D, canvas_texture);
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, canvas.width, canvas.height, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, canvas.pixels);
             draw_mesh(&canvas_mesh);
+
         } else {
             static int frame_count = 0;
             cycle_increment(&frame_count, 3);
@@ -679,30 +685,6 @@ int main(int argc, char** argv) {
         BEGIN_MONITORING(drawing);
 
         game::update_and_draw(&canvas);
-
-        // mouse input testing
-        {
-            struct Mouse {
-                int x, y;
-                bool left_button_pressed;
-            };
-            static Mouse mouse = {};
-
-            Window root, child;
-            int root_x, root_y;
-            unsigned int mask;
-            if (XQueryPointer(display, window, &root, &child, &root_x, &root_y,
-                              &mouse.x, &mouse.y, &mask) == True) {
-                mouse.left_button_pressed = mask & Button1Mask;
-            }
-
-            int x = mouse.x / pixel_scale;
-            int y = mouse.y / pixel_scale;
-            if (mouse.left_button_pressed) {
-                y += 10;
-            }
-            draw_line(&canvas, x, y, 150, 150, 0xFFFFFF);
-        }
 
         if (show_monitoring_overlay) {
             int graph_x = 10;
@@ -814,6 +796,23 @@ int main(int argc, char** argv) {
                         KeySym keysym = XLookupKeysym(&key_release, 0);
                         input::on_key_release(keysym);
                     }
+                    break;
+                }
+                case ButtonPress: {
+                    XButtonPressedEvent button_press = event.xbutton;
+                    input::on_button_press(button_press.button);
+                    break;
+                }
+                case ButtonRelease: {
+                    XButtonReleasedEvent button_release = event.xbutton;
+                    input::on_button_release(button_release.button);
+                    break;
+                }
+                case MotionNotify: {
+                    XMotionEvent motion = event.xmotion;
+                    int x = motion.x / pixel_scale;
+                    int y = motion.y / pixel_scale;
+                    input::on_mouse_move(x, y);
                     break;
                 }
                 case ClientMessage: {
