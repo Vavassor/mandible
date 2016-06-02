@@ -5,7 +5,9 @@
 #include "monitoring.h"
 #include "game.h"
 #include "draw.h"
+#include "memory.h"
 #include "string_utilities.h"
+#include "array_macros.h"
 #include "posix_errors.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -16,34 +18,12 @@
 
 #include "gl_core_3_3.h"
 #include "glx_extensions.h"
-
 #include "gl_shader.h"
 
 #include <time.h>
 
 #include <cstdlib>
 #include <cmath>
-
-#if defined(__GNUC__)
-#define RESTRICT __restrict__
-#elif defined(_MSC_VER)
-#define RESTRICT __declspec(restrict)
-#endif
-
-#define ARRAY_COUNT(a) \
-    ((sizeof(a) / sizeof(*(a))) / static_cast<std::size_t>(!(sizeof(a) % sizeof(*(a)))))
-
-#define FOR_N(index, n) \
-    for (auto (index) = 0; (index) < (n); ++(index))
-
-#define ALLOCATE_ARRAY(type, count) \
-    static_cast<type*>(std::malloc(sizeof(type) * (count)))
-
-#define ALLOCATE_STRUCT(type) \
-    static_cast<type*>(std::malloc(sizeof(type)))
-
-#define DEALLOCATE(a) \
-    std::free(a)
 
 struct Image {
     u8* data;
@@ -66,14 +46,12 @@ static void unload_image(Image* image) {
 static bool canvas_create(Canvas* canvas, int width, int height) {
     canvas->width = width;
     canvas->height = height;
-    canvas->pixels = ALLOCATE_ARRAY(u32, width * height);
+    canvas->pixels = ALLOCATE(u32, width * height);
     return canvas->pixels;
 }
 
 static void canvas_destroy(Canvas* canvas) {
-    if (canvas->pixels) {
-        DEALLOCATE(canvas->pixels);
-    }
+    SAFE_DEALLOCATE(canvas->pixels);
 }
 
 // Clock Functions.............................................................
@@ -269,7 +247,6 @@ int main(int argc, char** argv) {
     const char* icon_names[] = { "Icon.png", };
 
     bool vertical_synchronization = true;
-    bool show_monitoring_overlay = true;
     bool disable_ntsc_style_rendering = false;
 
     Display* display; // the connection to the X server
@@ -518,6 +495,7 @@ int main(int argc, char** argv) {
         glUniform1i(glGetUniformLocation(pass3_shader, "texture"), 0);
     }
 
+    // NTSC dot crawl texture
     {
         glGenTextures(1, &ntsc_dot_crawl);
         glBindTexture(GL_TEXTURE_2D, ntsc_dot_crawl);
@@ -684,74 +662,13 @@ int main(int argc, char** argv) {
 
         BEGIN_MONITORING(drawing);
 
-        game::update_and_draw(&canvas);
-
-        if (show_monitoring_overlay) {
-            int graph_x = 10;
-            int graph_y = 10;
-            int graph_height = 32;
-            int bar_width = 1;
-
-            // Draw the graph background.
-
-            int box_width = bar_width * monitoring::MAX_SLICES;
-            draw_rectangle_transparent(&canvas, graph_x, graph_y,
-                                       box_width, graph_height, 0x8F000000);
-
-            // These variables relate to how much of a bar to fill for a
-            // particular reading.
-            double nanoseconds_per_pixel = 5.0e6;
-            double base = 0.0;
-            double filled = 0.0;
-
-            // an index into the "distinct colour table"
-            const int starting_colour_index = 14;
-            int colour_index = starting_colour_index;
-
-            // Pull the monitoring data and draw bars on the graph.
-
-            monitoring::lock();
-            monitoring::Chart* chart = monitoring::get_chart();
-            FOR_N(i, monitoring::MAX_SLICES) {
-                int bar_x = graph_x + bar_width * i;
-
-                if (i == chart->current_slice) {
-                    // The current slice is always going to have empty or old
-                    // information, so a timer marker is drawn in its place.
-                    draw_rectangle(&canvas, bar_x, graph_y, bar_width,
-                                   graph_height, 0xFF00FFFF);
-                } else {
-                    // Fill the current slice with a striped bar of colours,
-                    // where the colours denote which readings contributes to
-                    // that much of the bar.
-
-                    monitoring::Chart::Slice* slice = chart->slices + i;
-                    FOR_N(j, slice->total_readings) {
-                        monitoring::Reading* reading = slice->readings + j;
-
-                        filled += static_cast<double>(reading->elapsed_total) /
-                                  nanoseconds_per_pixel;
-
-                        if (filled - base >= 1) {
-                            int y_bottom = base;
-                            int y_top = filled;
-                            int bar_height = y_top - y_bottom;
-                            u32 colour = distinct_colour_table[colour_index];
-                            draw_rectangle(&canvas, bar_x, graph_y + y_bottom,
-                                           bar_width, bar_height, colour);
-                            base = filled;
-                        }
-
-                        cycle_increment(&colour_index, ARRAY_COUNT(distinct_colour_table));
-                    }
-                }
-
-                base = 0.0;
-                filled = 0.0;
-                colour_index = starting_colour_index;
-            }
-            monitoring::unlock();
+        if (fps.total_time >= 1.0) {
+            game::update_fps(fps.frame_count);
+            fps.total_time = 0.0;
+            fps.frame_count = 0;
         }
+
+        game::update_and_draw(&canvas);
 
         // Since the monitoring data has been reported or ignored at this
         // point, tell the monitoring system to go ahead and move to the next
@@ -841,12 +758,10 @@ int main(int argc, char** argv) {
         double frame_end_time = get_time(&clock);
         fps.total_time += frame_end_time - frame_start_time;
         fps.frame_count += 1;
-        if (fps.total_time >= 1.0) {
-            LOG_DEBUG("fps: %i", fps.frame_count);
-            fps.total_time = 0.0;
-            fps.frame_count = 0;
-        }
     }
+
+    LOG_DEBUG("total heap allocated bytes before shutdown: %lu",
+              get_heap_allocated_total());
 
     // Unload all assets.
     unload_pixmap(display, icccm_icon);
@@ -876,6 +791,9 @@ int main(int argc, char** argv) {
     XFree(size_hints);
     XFreeColormap(display, colormap);
     XCloseDisplay(display);
+
+    LOG_DEBUG("total heap allocated bytes after shutdown: %lu",
+              get_heap_allocated_total());
 
     return 0;
 }

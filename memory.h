@@ -5,6 +5,7 @@
 void* heap_allocate(std::size_t bytes);
 void heap_deallocate(void* memory);
 void* stack_allocate(std::size_t bytes);
+std::size_t get_heap_allocated_total();
 
 #define ALLOCATE(type, count) \
     static_cast<type*>(heap_allocate(sizeof(type) * (count)))

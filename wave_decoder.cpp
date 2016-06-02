@@ -6,12 +6,6 @@
 #include <cstring>
 #include <cassert>
 
-#if defined(__GNUC__)
-#define ALWAYS_INLINE inline __attribute__((always_inline))
-#elif defined(_MSC_VER)
-#define ALWAYS_INLINE __forceinline
-#endif
-
 typedef uint8_t  u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
@@ -50,12 +44,14 @@ struct MsAdpcmData {
 
 struct WaveDecoder {
     MsAdpcmData ms_adpcm_data;
+
     struct {
         void* buffer;
         u32 buffer_size;
         u32 frames;
         u32 start;
     } decoded;
+
     struct {
         void* block;
         u32 block_size;
@@ -74,7 +70,7 @@ struct WaveDecoder {
     u8 channels;
 };
 
-static ALWAYS_INLINE u8 extract8(WaveDecoder* decoder) {
+static inline u8 extract8(WaveDecoder* decoder) {
    int byte = std::fgetc(decoder->file);
    if (byte == EOF) {
        decoder->end_of_file = true;
@@ -83,19 +79,19 @@ static ALWAYS_INLINE u8 extract8(WaveDecoder* decoder) {
    return byte;
 }
 
-static u16 extract16(WaveDecoder* decoder) {
+static inline u16 extract16(WaveDecoder* decoder) {
     u16 x;
     x = extract8(decoder);
-    x += static_cast<u16>(extract8(decoder)) << 8;
+    x |= static_cast<u16>(extract8(decoder)) << 8;
     return x;
 }
 
-static u32 extract32(WaveDecoder* decoder) {
+static inline u32 extract32(WaveDecoder* decoder) {
     u32 x;
     x = extract8(decoder);
-    x += static_cast<u32>(extract8(decoder)) << 8;
-    x += static_cast<u32>(extract8(decoder)) << 16;
-    x += static_cast<u32>(extract8(decoder)) << 24;
+    x |= static_cast<u32>(extract8(decoder)) << 8;
+    x |= static_cast<u32>(extract8(decoder)) << 16;
+    x |= static_cast<u32>(extract8(decoder)) << 24;
     return x;
 }
 
@@ -452,49 +448,49 @@ static u32 ms_adpcm_decode_block(MsAdpcmData* adpcm_data, int channels,
     return output_length;
 }
 
-static ALWAYS_INLINE u8 pull_u8(const void* buffer) {
+static inline u8 pull_u8(const void* buffer) {
     return static_cast<const u8*>(buffer)[0];
 }
 
-static ALWAYS_INLINE u16 pull_u16(const void* buffer) {
+static inline u16 pull_u16(const void* buffer) {
     const u8* b = static_cast<const u8*>(buffer);
     u16 x;
     x = b[0];
-    x += static_cast<u16>(b[1]) << 8;
+    x |= static_cast<u16>(b[1]) << 8;
     return x;
 }
 
-static ALWAYS_INLINE u32 pull_u32(const void* buffer) {
+static inline u32 pull_u32(const void* buffer) {
     const u8* b = static_cast<const u8*>(buffer);
     u32 x;
     x = b[0];
-    x += static_cast<u32>(b[1]) << 8;
-    x += static_cast<u32>(b[2]) << 16;
-    x += static_cast<u32>(b[3]) << 24;
+    x |= static_cast<u32>(b[1]) << 8;
+    x |= static_cast<u32>(b[2]) << 16;
+    x |= static_cast<u32>(b[3]) << 24;
     return x;
 }
 
-static ALWAYS_INLINE float pull_float(const void* buffer) {
+static inline float pull_float(const void* buffer) {
     const u8* b = static_cast<const u8*>(buffer);
     u32 x;
     x = b[0];
-    x += static_cast<u32>(b[1]) << 8;
-    x += static_cast<u32>(b[2]) << 16;
-    x += static_cast<u32>(b[3]) << 24;
+    x |= static_cast<u32>(b[1]) << 8;
+    x |= static_cast<u32>(b[2]) << 16;
+    x |= static_cast<u32>(b[3]) << 24;
     return *(reinterpret_cast<float*>(&x));
 }
 
-static ALWAYS_INLINE double pull_double(const void* buffer) {
+static inline double pull_double(const void* buffer) {
     const u8* b = static_cast<const u8*>(buffer);
     u64 x;
     x = b[0];
-    x += static_cast<u64>(b[1]) << 8;
-    x += static_cast<u64>(b[2]) << 16;
-    x += static_cast<u64>(b[3]) << 24;
-    x += static_cast<u64>(b[4]) << 32;
-    x += static_cast<u64>(b[5]) << 40;
-    x += static_cast<u64>(b[6]) << 48;
-    x += static_cast<u64>(b[7]) << 56;
+    x |= static_cast<u64>(b[1]) << 8;
+    x |= static_cast<u64>(b[2]) << 16;
+    x |= static_cast<u64>(b[3]) << 24;
+    x |= static_cast<u64>(b[4]) << 32;
+    x |= static_cast<u64>(b[5]) << 40;
+    x |= static_cast<u64>(b[6]) << 48;
+    x |= static_cast<u64>(b[7]) << 56;
     return *(reinterpret_cast<double*>(&x));
 }
 
@@ -582,26 +578,26 @@ static void fetch_and_decode_block(WaveDecoder* decoder) {
     decoder->frames_left -= decoded_frames;
 }
 
-static ALWAYS_INLINE float format_u8(u8 value) {
+static inline float format_u8(u8 value) {
     const float scale = static_cast<float>(1.0 / 255.0);
     return static_cast<float>(value) * scale;
 }
 
-static ALWAYS_INLINE float format_s16(s16 value) {
+static inline float format_s16(s16 value) {
     const float scale = static_cast<float>(1.0 / 32767.5);
     return (static_cast<float>(value) + 0.5f) * scale;
 }
 
-static ALWAYS_INLINE float format_s32(s32 value) {
+static inline float format_s32(s32 value) {
     const float scale = static_cast<float>(1.0 / 2147483647.5);
     return (static_cast<float>(value) + 0.5f) * scale;
 }
 
-static ALWAYS_INLINE float format_float(float value) {
+static inline float format_float(float value) {
     return value;
 }
 
-static ALWAYS_INLINE float format_double(double value) {
+static inline float format_double(double value) {
     return static_cast<float>(value);
 }
 

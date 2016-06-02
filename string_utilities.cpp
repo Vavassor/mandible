@@ -42,3 +42,31 @@ bool strings_match(const char* a, const char* b) {
     return *a == *b;
 }
 
+static bool memory_matches(const void* a, const void* b, std::size_t n) {
+    assert(a);
+    assert(b);
+    const unsigned char* p1 = static_cast<const unsigned char*>(a);
+    const unsigned char* p2 = static_cast<const unsigned char*>(b);
+    while (n--) {
+        if (*p1 != *p2) {
+            return false;
+        } else {
+            ++p1;
+            ++p2;
+        }
+    }
+    return true;
+}
+
+char* find_string(const char* a, const char* b) {
+    assert(a);
+    assert(b);
+    std::size_t n = string_size(b);
+    while (*a) {
+        if (memory_matches(a, b, n)) {
+            return const_cast<char*>(a);
+        }
+        ++a;
+    }
+    return nullptr;
+}

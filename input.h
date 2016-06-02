@@ -6,6 +6,7 @@ namespace input {
 
 enum UserButton {
 	USER_BUTTON_A,
+	USER_BUTTON_TAB,
 	USER_BUTTON_COUNT,
 };
 
@@ -19,7 +20,7 @@ struct Controller;
 bool is_button_pressed(Controller* controller, UserButton button);
 bool is_button_released(Controller* controller, UserButton button);
 bool is_button_tapped(Controller* controller, UserButton button);
-float get_axis(Controller* controller, UserAxis axis);
+double get_axis(Controller* controller, UserAxis axis);
 
 bool startup();
 void shutdown();

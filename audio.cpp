@@ -6,6 +6,8 @@
 #include "wave_decoder.h"
 #include "string_utilities.h"
 #include "monitoring.h"
+#include "array_macros.h"
+#include "memory.h"
 
 #define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
@@ -14,29 +16,7 @@
 
 #include <pthread.h>
 
-#include <cstdlib>
 #include <cstring>
-#include <cmath>
-
-// General-Use Macros and Functions............................................
-
-#define ALLOCATE_STRUCT(type) \
-    static_cast<type*>(std::malloc(sizeof(type)));
-
-#define DEALLOCATE_STRUCT(s) \
-    std::free(s);
-
-#define CLEAR_STRUCT(s) \
-    std::memset((s), 0, sizeof *(s));
-
-#define ALLOCATE_ARRAY(type, count) \
-    static_cast<type*>(std::malloc(sizeof(type) * (count)));
-
-#define DEALLOCATE_ARRAY(a) \
-    std::free(a);
-
-#define FOR_N(index, n) \
-    for (auto (index) = 0; (index) < (n); ++(index))
 
 namespace audio {
 
@@ -321,6 +301,9 @@ static void convert_format(void* in_samples, void* out_samples, int frames, Conv
     }
 }
 
+#if 0
+// @Unused: but very useful for testing!
+
 #define F_TAU 6.28318530717958647692f
 
 static float pitch_to_frequency(int pitch) {
@@ -340,6 +323,7 @@ static void generate_sine_samples(void* samples, int count, int channels,
         }
     }
 }
+#endif
 
 // Advanced Linux Sound Architecture device back-end...........................
 
@@ -657,7 +641,7 @@ static int close_stream(StreamManager* manager, int stream_index) {
             break;
         }
     }
-    DEALLOCATE_ARRAY(stream->decoded_samples);
+    DEALLOCATE(stream->decoded_samples);
 
     int last = manager->stream_count - 1;
     if (manager->stream_count > 1 && stream_index != last) {
@@ -677,9 +661,9 @@ static void close_stream_by_id(StreamManager* manager, StreamId stream_id) {
     }
 }
 
-static void close_all_streams(StreamManager* stream_manager) {
-    FOR_N(i, stream_manager->stream_count) {
-        close_stream(stream_manager, i);
+static void close_all_streams(StreamManager* manager) {
+    FOR_N(i, manager->stream_count) {
+        i = close_stream(manager, i);
     }
 }
 
@@ -687,9 +671,10 @@ static void open_stream(StreamManager* stream_manager, const char* filename,
                         u64 samples_to_decode, float volume, bool looping,
                         StreamId id = 0) {
 
+    assert(stream_manager->stream_count < ARRAY_COUNT(stream_manager->streams));
     Stream* stream = stream_manager->streams + stream_manager->stream_count;
 
-    const char* file_extension = std::strstr(filename, ".") + 1;
+    const char* file_extension = find_string(filename, ".") + 1;
     stream->decoder_type = decoder_type_from_file_extension(file_extension);
 
     char path[256];
@@ -723,7 +708,7 @@ static void open_stream(StreamManager* stream_manager, const char* filename,
         }
     }
 
-    stream->decoded_samples = ALLOCATE_ARRAY(float, samples_to_decode);
+    stream->decoded_samples = ALLOCATE(float, samples_to_decode);
     stream->volume = volume;
     stream->looping = looping;
     stream->id = id;
@@ -880,7 +865,7 @@ namespace {
     StreamManager stream_manager;
     MessageQueue message_queue;
     ConversionInfo conversion_info;
-    Specification specification;
+    Specification specification; // device description
     snd_pcm_t* pcm_handle;
     float* mixed_samples;
     void* devicebound_samples;
@@ -903,8 +888,8 @@ static void* run_mixer_thread(void* argument) {
     std::size_t samples = specification.channels * specification.frames;
 
     // Setup mixing.
-    mixed_samples = ALLOCATE_ARRAY(float, samples);
-    devicebound_samples = ALLOCATE_ARRAY(u8, specification.size);
+    mixed_samples = ALLOCATE(float, samples);
+    devicebound_samples = ALLOCATE(u8, specification.size);
     fill_with_silence(mixed_samples, specification.silence, samples);
 
     conversion_info.channels = specification.channels;
@@ -991,8 +976,8 @@ static void* run_mixer_thread(void* argument) {
 
     // Clear up mixer data.
     close_device(pcm_handle);
-    DEALLOCATE_ARRAY(mixed_samples);
-    DEALLOCATE_ARRAY(devicebound_samples);
+    DEALLOCATE(mixed_samples);
+    DEALLOCATE(devicebound_samples);
 
     return nullptr;
 }

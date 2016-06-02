@@ -1,13 +1,17 @@
 #include "draw.h"
 
 #include "unicode.h"
-#include "string_utilities.h"
-#include "logging.h"
 
 #include <alloca.h> // @Incomplete: remove dependency on linux-specific stack allocation
 
 #include <cassert>
 #include <cmath>
+
+static std::size_t string_size(const char* string) {
+    const char* s;
+    for (s = string; *s; ++s);
+    return s - string;
+}
 
 // A colour table maximising the colour difference between each value and all
 // of the others. CIEDE2000 was used as the formula for comparison.

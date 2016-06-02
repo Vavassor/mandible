@@ -6,8 +6,10 @@ set (INCLUDES
     ani_file.h
     atomic.h
     audio.h
+    byte_buffer.h
     draw.h
     evdev_text.h
+    file_handling.h
     font.h
     game.h
     gl_core_3_3.h
@@ -24,6 +26,7 @@ set (INCLUDES
     string_utilities.h
     unicode.h
     wave_decoder.h
+    wld_file.h
 )
 source_group ("Header Files" FILES ${INCLUDES})
 
@@ -32,8 +35,10 @@ set (SOURCES
     ani_file.cpp
     atomic.cpp
     audio.cpp
+    byte_buffer.cpp
     draw.cpp
     evdev_text.cpp
+    file_handling.cpp
     font.cpp
     game.cpp
     gl_core_3_3.c
@@ -50,6 +55,7 @@ set (SOURCES
     string_utilities.cpp
     unicode.cpp
     wave_decoder.cpp
+    wld_file.cpp
 )
 source_group ("Source Files" FILES ${SOURCES})
 

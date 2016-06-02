@@ -1,12 +1,7 @@
 #pragma once
 
 namespace logging {
-	enum class Level {
-		Error,
-		Info,
-		Debug,
-	};
-
+	enum class Level { Error, Info, Debug, };
 	void add_message(Level level, const char* format, ...);
 }
 

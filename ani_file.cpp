@@ -3,164 +3,24 @@
 #include "logging.h"
 #include "string_utilities.h"
 #include "memory.h"
-#include "sized_types.h"
+#include "file_handling.h"
+#include "byte_buffer.h"
 
-#include <cstdio>
 #include <cstring>
 #include <cassert>
 #include <cinttypes>
 
-struct File {
-    void* data;
-    s64 position;
-    s64 end;
-    bool end_of_file;
-    bool reallocation_error;
-};
-
-static bool load_whole_binary_file(File* out_file, const char* filename) {
-    std::FILE* file = std::fopen(filename, "rb");
-    if (!file) {
-        return false;
-    }
-
-    std::fseek(file, 0, SEEK_END);
-    long int total_bytes = std::ftell(file);
-    std::fseek(file, 0, SEEK_SET);
-
-    char* data = ALLOCATE(char, total_bytes);
-    if (!data) {
-        std::fclose(file);
-        return false;
-    }
-
-    std::size_t read_count = std::fread(data, total_bytes, 1, file);
-    std::fclose(file);
-    if (read_count != 1) {
-        DEALLOCATE(data);
-        return false;
-    }
-
-    out_file->data = data;
-    out_file->end = total_bytes;
-    return true;
-}
-
-static bool save_whole_file(File* save_file, const char* filename) {
-    std::FILE* file = std::fopen(filename, "wb");
-    if (!file) {
-        return false;
-    }
-
-    std::size_t write_count = std::fwrite(save_file->data,
-                                          save_file->position, 1, file);
-    std::fclose(file);
-    if (write_count != 1) {
-        return false;
-    }
-
-    return true;
-}
-
-static void unload_file(File* file) {
-    SAFE_DEALLOCATE(file->data);
-}
-
-static inline u8 extract8(File* file) {
-    if (file->position >= file->end) {
-        file->end_of_file = true;
-        return 0;
-    }
-    u8* pointer = static_cast<u8*>(file->data);
-    u8 value = pointer[file->position];
-    file->position += 1;
-    return value;
-}
-
-static u16 extract16(File* file) {
-    u16 x;
-    x = static_cast<u16>(extract8(file));
-    x += static_cast<u16>(extract8(file)) << 8;
-    return x;
-}
-
-static u32 extract32(File* file) {
-    u32 x;
-    x = static_cast<u32>(extract8(file));
-    x += static_cast<u32>(extract8(file)) << 8;
-    x += static_cast<u32>(extract8(file)) << 16;
-    x += static_cast<u32>(extract8(file)) << 24;
-    return x;
-}
-
-static u64 extract64(File* file) {
-    u64 x;
-    x = static_cast<u64>(extract8(file));
-    x += static_cast<u64>(extract8(file)) << 8;
-    x += static_cast<u64>(extract8(file)) << 16;
-    x += static_cast<u64>(extract8(file)) << 24;
-    x += static_cast<u64>(extract8(file)) << 32;
-    x += static_cast<u64>(extract8(file)) << 40;
-    x += static_cast<u64>(extract8(file)) << 48;
-    x += static_cast<u64>(extract8(file)) << 56;
-    return x;
-}
-
-static void seek_file(File* file, s64 offset) {
+static void seek_buffer(ByteBuffer* buffer, s64 offset) {
     assert(offset >= 0);
     if (offset > 0) {
-        file->position += offset;
-        if (file->position < 0) {
-            file->position = 0;
+        buffer->position += offset;
+        if (buffer->position < 0) {
+            buffer->position = 0;
         }
-        if (file->position >= file->end) {
-            file->end_of_file = true;
+        if (buffer->position >= buffer->end) {
+            buffer->end_of_file = true;
         }
     }
-}
-
-static inline void insert8(File* file, u8 value) {
-    assert(file->position <= file->end);
-    if (file->position >= file->end) {
-        s64 end = file->end + 4096;
-        u8* data = ALLOCATE(u8, end);
-        if (!data) {
-            file->reallocation_error = true;
-            return;
-        }
-        file->end = end;
-        if (file->data) {
-            std::memcpy(data, file->data, file->end);
-        }
-        DEALLOCATE(file->data);
-        file->data = data;
-    }
-    u8* pointer = static_cast<u8*>(file->data);
-    pointer[file->position] = value;
-    file->position += 1;
-}
-
-static void insert16(File* file, u16 x) {
-    insert8(file, x & 0xFF);
-    insert8(file, x >> 8 & 0xFF);
-}
-
-static void insert32(File* file, u32 x) {
-    insert8(file, x & 0xFF);
-    insert8(file, x >> 8 & 0xFF);
-    insert8(file, x >> 16 & 0xFF);
-    insert8(file, x >> 24 & 0xFF);
-}
-
-static void insert64(File* file, u64 x) {
-    insert8(file, x & 0xFF);
-    insert8(file, x >> 8 & 0xFF);
-    insert8(file, x >> 16 & 0xFF);
-    insert8(file, x >> 24 & 0xFF);
-    insert8(file, x >> 32 & 0xFF);
-    insert8(file, x >> 40 & 0xFF);
-    insert8(file, x >> 48 & 0xFF);
-    insert8(file, x >> 56 & 0xFF);
 }
 
 namespace ani {
@@ -217,15 +77,15 @@ namespace {
 }
 
 bool load_asset(Asset* asset, const char* filename) {
-    File file = {};
-    bool loaded = load_whole_binary_file(&file, filename);
+    ByteBuffer buffer = {};
+    bool loaded = load_whole_file(filename, &buffer.data, &buffer.end);
     if (!loaded) {
         LOG_ERROR("Failed to open file %s.", filename);
         return false;
     }
 
-    u64 signature = extract64(&file);
-    u16 version = extract16(&file);
+    u64 signature = extract64(&buffer);
+    u16 version = extract16(&buffer);
 
     if (signature != ANI_SIGNATURE) {
         LOG_ERROR("The file signature was not the type expected; instead it "
@@ -239,23 +99,23 @@ bool load_asset(Asset* asset, const char* filename) {
         goto error;
     }
 
-    while (!file.end_of_file) {
-        u32 chunk_size = extract32(&file);
-        u32 chunk_type = extract32(&file);
+    while (!buffer.end_of_file) {
+        u32 chunk_size = extract32(&buffer);
+        u32 chunk_type = extract32(&buffer);
         u32 data_size = chunk_size - sizeof chunk_type;
         switch (chunk_type) {
             case CHUNK_TYPE_SEQUENCE: {
-                asset->sequences_count = extract16(&file);
+                asset->sequences_count = extract16(&buffer);
                 asset->sequences = ALLOCATE(Sequence, asset->sequences_count);
                 if (!asset->sequences) {
                     LOG_ERROR("Failed to allocate the memory needed for "
                               "storing the frame sequences.");
                     goto error;
                 }
-                u16 frame_size = extract16(&file);
+                u16 frame_size = extract16(&buffer);
                 for (int i = 0; i < asset->sequences_count; ++i) {
                     Sequence* sequence = asset->sequences + i;
-                    sequence->frames_count = extract16(&file);
+                    sequence->frames_count = extract16(&buffer);
                     sequence->frames = ALLOCATE(Frame, sequence->frames_count);
                     if (!sequence->frames) {
                         LOG_ERROR("Failed to allocate the memory needed for "
@@ -264,54 +124,54 @@ bool load_asset(Asset* asset, const char* filename) {
                     }
                     for (int j = 0; j < sequence->frames_count; ++j) {
                         Frame* frame = sequence->frames + j;
-                        frame->x = extract16(&file);
-                        frame->y = extract16(&file);
-                        frame->width = extract16(&file);
-                        frame->height = extract16(&file);
-                        frame->origin_x = static_cast<s16>(extract16(&file));
-                        frame->origin_y = static_cast<s16>(extract16(&file));
-                        frame->ticks = extract16(&file);
-                        seek_file(&file, frame_size - basic_frame_size);
+                        frame->x = extract16(&buffer);
+                        frame->y = extract16(&buffer);
+                        frame->width = extract16(&buffer);
+                        frame->height = extract16(&buffer);
+                        frame->origin_x = static_cast<s16>(extract16(&buffer));
+                        frame->origin_y = static_cast<s16>(extract16(&buffer));
+                        frame->ticks = extract16(&buffer);
+                        seek_buffer(&buffer, frame_size - basic_frame_size);
                     }
                 }
                 break;
             }
             case CHUNK_TYPE_NAME: {
-                u32 buffer_size = data_size + asset->sequences_count
-                                - sizeof(u16) * asset->sequences_count;
-                char* buffer = ALLOCATE(char, buffer_size);
-                if (!buffer) {
+                u32 names_size = data_size + asset->sequences_count
+                               - sizeof(u16) * asset->sequences_count;
+                char* names = ALLOCATE(char, names_size);
+                if (!names) {
                     LOG_ERROR("Failed to allocate the memory needed to store "
                               "the sequence names.");
                     goto error;
                 }
-                char* pointer = buffer;
+                char* pointer = names;
                 for (int i = 0; i < asset->sequences_count; ++i) {
-                    u16 name_size = extract16(&file);
+                    u16 name_size = extract16(&buffer);
                     asset->sequences[i].name = pointer;
                     for (u16 j = 0; j < name_size; ++j) {
-                        pointer[j] = extract8(&file);
+                        pointer[j] = extract8(&buffer);
                     }
                     pointer += name_size;
                     *pointer = '\0';
                     pointer += 1;
                 }
-                assert(pointer - buffer <= buffer_size);
+                assert(pointer - names <= names_size);
                 break;
             }
             default: {
                 // Skip all unrecognised and unneeded chunks.
-                seek_file(&file, data_size);
+                seek_buffer(&buffer, data_size);
                 break;
             }
         }
     }
 
-    unload_file(&file);
+    clear(&buffer);
     return true;
 
 error:
-    unload_file(&file);
+    clear(&buffer);
     unload_asset(asset);
     return false;
 }
@@ -325,9 +185,14 @@ void unload_asset(Asset* asset) {
 }
 
 bool save_asset(Asset* asset, const char* filename) {
-    File file = {};
-    insert64(&file, ANI_SIGNATURE);
-    insert16(&file, 1); // version
+    ByteBuffer buffer = {};
+
+    // Header
+
+    insert64(&buffer, ANI_SIGNATURE);
+    insert16(&buffer, 1); // version
+
+    // Sequence Chunk
 
     int total_frames = 0;
     for (int i = 0; i < asset->sequences_count; ++i) {
@@ -338,25 +203,27 @@ bool save_asset(Asset* asset, const char* filename) {
                    + 2 * sizeof(u16)                      // chunk header
                    + asset->sequences_count * sizeof(u16) // sequence headers
                    + total_frames * frame_size;           // frame data
-    insert32(&file, chunk_size);
-    insert32(&file, CHUNK_TYPE_SEQUENCE);
-    insert16(&file, asset->sequences_count);
-    insert16(&file, frame_size);
+    insert32(&buffer, chunk_size);
+    insert32(&buffer, CHUNK_TYPE_SEQUENCE);
+    insert16(&buffer, asset->sequences_count);
+    insert16(&buffer, frame_size);
 
     for (int i = 0; i < asset->sequences_count; ++i) {
         Sequence* sequence = asset->sequences + i;
-        insert16(&file, sequence->frames_count);
+        insert16(&buffer, sequence->frames_count);
         for (int j = 0; j < sequence->frames_count; ++j) {
             Frame* frame = sequence->frames + j;
-            insert16(&file, frame->x);
-            insert16(&file, frame->y);
-            insert16(&file, frame->width);
-            insert16(&file, frame->height);
-            insert16(&file, frame->origin_x);
-            insert16(&file, frame->origin_y);
-            insert16(&file, frame->ticks);
+            insert16(&buffer, frame->x);
+            insert16(&buffer, frame->y);
+            insert16(&buffer, frame->width);
+            insert16(&buffer, frame->height);
+            insert16(&buffer, frame->origin_x);
+            insert16(&buffer, frame->origin_y);
+            insert16(&buffer, frame->ticks);
         }
     }
+
+    // Name Chunk
 
     u32 total_name_size = 0;
     for (int i = 0; i < asset->sequences_count; ++i) {
@@ -364,24 +231,24 @@ bool save_asset(Asset* asset, const char* filename) {
     }
     chunk_size = sizeof(u32) + total_name_size
                + sizeof(u16) * asset->sequences_count;
-    insert32(&file, chunk_size);
-    insert32(&file, CHUNK_TYPE_NAME);
+    insert32(&buffer, chunk_size);
+    insert32(&buffer, CHUNK_TYPE_NAME);
     for (int i = 0; i < asset->sequences_count; ++i) {
         char* name = asset->sequences[i].name;
         u16 name_size = string_size(name);
-        insert16(&file, name_size);
+        insert16(&buffer, name_size);
         for (u16 j = 0; j < name_size; ++j) {
-            insert8(&file, name[j]);
+            insert8(&buffer, name[j]);
         }
     }
 
-    if (file.reallocation_error) {
-        unload_file(&file);
+    if (buffer.reallocation_error) {
+        clear(&buffer);
         return false;
     }
 
-    bool saved = save_whole_file(&file, filename);
-    unload_file(&file);
+    bool saved = save_whole_file(filename, buffer.data, buffer.position);
+    clear(&buffer);
 
     return saved;
 }

@@ -54,6 +54,7 @@ enum KeyMapping {
     KEY_MAPPING_RIGHT,
     KEY_MAPPING_DOWN,
     KEY_MAPPING_A,
+    KEY_MAPPING_TAB,
     KEY_MAPPING_COUNT,
 };
 
@@ -70,6 +71,7 @@ static void setup_keyboard_state(KeyboardState* keyboard_state) {
     map[KEY_MAPPING_RIGHT] = XK_Right;
     map[KEY_MAPPING_DOWN]  = XK_Down;
     map[KEY_MAPPING_A]     = XK_x;
+    map[KEY_MAPPING_TAB]   = XK_Tab;
 
     ARRAY_COPY(map, keyboard_state->key_map);
     ARRAY_CLEAR(keyboard_state->keys_pressed);
@@ -109,7 +111,7 @@ static bool is_key_down(KeyboardState* keyboard_state, KeyMapping key) {
 struct Device {
     struct AxisSpecification {
         int deadband[2];
-        float coefficients[2];
+        double coefficients[2];
     };
 
     char name[128];
@@ -209,23 +211,23 @@ static bool evdev_setup_device(Device* device) {
             int dead_zone = absinfo.flat + (max - min) / 9;
 
             int dead_min = 0;
-            float normalized_min = 0.0f;
+            double normalized_min = 0.0;
             if (min < 0) {
                 dead_min = -dead_zone;
-                normalized_min = -1.0f;
+                normalized_min = -1.0;
             }
             device->axis_attributes[i].deadband[0] = dead_min;
 
             int dead_max = 0;
-            float normalized_max = 0.0f;
+            double normalized_max = 0.0;
             if (max > 0) {
                 dead_max = dead_zone;
-                normalized_max = 1.0f;
+                normalized_max = 1.0;
             }
             device->axis_attributes[i].deadband[1] = dead_max;
 
-            float a = (normalized_max - normalized_min) / static_cast<float>((max - dead_max) + (normalized_min - min));
-            float b = normalized_max - a * static_cast<float>(max - dead_max);
+            double a = (normalized_max - normalized_min) / static_cast<double>((max - dead_max) + (normalized_min - min));
+            double b = normalized_max - a * static_cast<double>(max - dead_max);
 
             device->axis_attributes[i].coefficients[0] = a;
             device->axis_attributes[i].coefficients[1] = b;
@@ -452,7 +454,7 @@ static void check_device_monitor(udev_monitor* device_monitor, DeviceCollection*
 struct Controller {
     bool buttons[USER_BUTTON_COUNT];
     int button_counts[USER_BUTTON_COUNT];
-    float axes[USER_AXIS_COUNT];
+    double axes[USER_AXIS_COUNT];
 };
 
 bool is_button_pressed(Controller* controller, UserButton button) {
@@ -473,36 +475,39 @@ bool is_button_tapped(Controller* controller, UserButton button) {
     }
 }
 
-float get_axis(Controller* controller, UserAxis axis) {
+double get_axis(Controller* controller, UserAxis axis) {
     return controller->axes[axis];
 }
 
 static void update_controller_from_keyboard_state(Controller* controller, KeyboardState* keyboard_state) {
-    float dx = 0.0f;
-    float dy = 0.0f;
+    double dx = 0.0;
+    double dy = 0.0;
     if (is_key_down(keyboard_state, KEY_MAPPING_LEFT)) {
-        dx -= 1.0f;
+        dx -= 1.0;
     }
     if (is_key_down(keyboard_state, KEY_MAPPING_RIGHT)) {
-        dx += 1.0f;
+        dx += 1.0;
     }
     if (is_key_down(keyboard_state, KEY_MAPPING_DOWN)) {
-        dy -= 1.0f;
+        dy -= 1.0;
     }
     if (is_key_down(keyboard_state, KEY_MAPPING_UP)) {
-        dy += 1.0f;
+        dy += 1.0;
     }
-    float magnitude = std::sqrt(dx * dx + dy * dy);
-    if (magnitude > 0.0f) {
+    double magnitude = std::sqrt(dx * dx + dy * dy);
+    if (magnitude > 0.0) {
         controller->axes[USER_AXIS_HORIZONTAL] = dx / magnitude;
         controller->axes[USER_AXIS_VERTICAL] = dy / magnitude;
     } else {
-        controller->axes[USER_AXIS_HORIZONTAL] = 0.0f;
-        controller->axes[USER_AXIS_VERTICAL] = 0.0f;
+        controller->axes[USER_AXIS_HORIZONTAL] = 0.0;
+        controller->axes[USER_AXIS_VERTICAL] = 0.0;
     }
 
     controller->buttons[USER_BUTTON_A] = keyboard_state->keys_pressed[KEY_MAPPING_A];
     controller->button_counts[USER_BUTTON_A] = keyboard_state->edge_counts[KEY_MAPPING_A];
+
+    controller->buttons[USER_BUTTON_TAB] = keyboard_state->keys_pressed[KEY_MAPPING_TAB];
+    controller->button_counts[USER_BUTTON_TAB] = keyboard_state->edge_counts[KEY_MAPPING_TAB];
 }
 
 #if 0

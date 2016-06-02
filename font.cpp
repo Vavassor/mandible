@@ -50,9 +50,9 @@ static inline void cycle_increment(int* s, int n) {
 
 // Character hash map functions................................................
 
-// noncharacter permanently reserved by the Unicode standard for internal use,
-// here being defined to represent an empty spot in the hash map
-#define INVALID_CODEPOINT 0xFFFFu
+// this is a noncharacter permanently reserved by the Unicode standard for
+// internal use, here being defined to represent an empty spot in the hash map
+#define INVALID_CODEPOINT U'\U0000FFFF'
 
 static void character_map_clear(char32_t* map, int map_count) {
     for (int i = 0; i < map_count; ++i) {
@@ -130,22 +130,6 @@ static int kerning_table_search(BmFont::KerningPair* table, int table_count,
 
 // General String Search Functions.............................................
 
-static bool memory_matches(const void* a, const void* b, std::size_t n) {
-    assert(a);
-    assert(b);
-    const unsigned char* p1 = static_cast<const unsigned char*>(a);
-    const unsigned char* p2 = static_cast<const unsigned char*>(b);
-    while (n--) {
-        if (*p1 != *p2) {
-            return false;
-        } else {
-            p1++;
-            p2++;
-        }
-    }
-    return true;
-}
-
 static char* find_char(const char* s, char c) {
     assert(s);
     while (*s != c) {
@@ -154,19 +138,6 @@ static char* find_char(const char* s, char c) {
         }
     }
     return const_cast<char*>(s);
-}
-
-static char* find_string(const char* a, const char* b) {
-    assert(a);
-    assert(b);
-    std::size_t n = string_size(b);
-    while (*a) {
-        if (memory_matches(a, b, n)) {
-            return const_cast<char*>(a);
-        }
-        a++;
-    }
-    return nullptr;
 }
 
 static std::size_t count_span_without_chars(const char* s, const char* set) {
