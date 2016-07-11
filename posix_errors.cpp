@@ -6,6 +6,7 @@
 #include <execinfo.h>
 
 #include <cstdlib>
+#include <cstdio>
 
 #if defined(__GNUC__)
 #define DEMANGLE_FUNCTION_NAMES_GCC
@@ -15,11 +16,22 @@
 #include <cxxabi.h>
 #endif
 
+using std::free;
+using std::snprintf;
+
+#if !defined(TRAP_BRANCH)
+#define TRAP_BRANCH (TRAP_BRKPT + 2)
+#endif
+
+#if !defined(TRAP_HWBKPT)
+#define TRAP_HWBKPT (TRAP_BRKPT + 3)
+#endif
+
 #define MAX_STACK_FRAMES 64
 
 namespace {
     void* stack_traces[MAX_STACK_FRAMES];
-    unsigned char signal_handler_stack[SIGSTKSZ];
+    char signal_handler_stack[SIGSTKSZ];
 }
 
 static void log_stack_trace() {
@@ -66,7 +78,7 @@ static void log_stack_trace() {
                 LOG_ERROR("  %s: %s+%s", messages[i], mangled_name, begin_offset);
             }
             if (demangled_name) {
-                std::free(demangled_name);
+                free(demangled_name);
             }
         } else {
             LOG_ERROR("  %s", messages[i]);
@@ -78,7 +90,7 @@ static void log_stack_trace() {
         LOG_ERROR("  %s", messages[i]);
     }
 #endif
-    std::free(messages);
+    free(messages);
 }
 
 static const char* describe_arithmetic_exception(int code) {
@@ -91,28 +103,117 @@ static const char* describe_arithmetic_exception(int code) {
         case FPE_FLTRES: return "Floating point inexact result.";
         case FPE_FLTINV: return "Floating point invalid operation.";
         case FPE_FLTSUB: return "Subscript out of range.";
+        defualt:         return "Reason unknown.";
     }
-    return "Exception unknown.";
 }
 
-static void handle_posix_signal(int signal, siginfo_t* info, void* /*context*/) {
+static const char* describe_bus_error(int code) {
+    switch (code) {
+        case BUS_ADRALN: return "Invalid address alignment.";
+        case BUS_ADRERR: return "Nonexistent physical address.";
+        case BUS_OBJERR: return "Object-specific hardware error.";
+        default:         return "Reason unknown.";
+    }
+}
+
+static const char* describe_illegal_instruction(int code) {
+    switch (code) {
+        case ILL_ILLOPC: return "Illegal opcode.";
+        case ILL_ILLOPN: return "Illegal operand.";
+        case ILL_ILLADR: return "Illegal addressing mode.";
+        case ILL_ILLTRP: return "Illegal trap.";
+        case ILL_PRVOPC: return "Privileged opcode.";
+        case ILL_PRVREG: return "Privileged register.";
+        case ILL_COPROC: return "Coprocessor error.";
+        case ILL_BADSTK: return "Internal stack error.";
+        default:         return "Reason unknown.";
+    }
+}
+
+static const char* describe_segmentation_fault(int code) {
+    switch (code) {
+        case SEGV_MAPERR: return "Address not mapped to object.";
+        case SEGV_ACCERR: return "Invalid permissions for mapped object.";
+        default:          return "Unknown cause of fault.";
+    }
+}
+
+static const char* describe_trap(int code) {
+    switch (code) {
+        case TRAP_BRKPT:  return "Process breakpoint.";
+        case TRAP_TRACE:  return "Process trace trap.";
+        case TRAP_BRANCH: return "Process taken branch trap.";
+        case TRAP_HWBKPT: return "Hardware breakpoint/watchpoint.";
+        default:          return "Reason unknown.";
+    }
+}
+
+#define MESSAGE_MAX 128
+#define COMMAND_MAX 256
+
+static void handle_posix_signal(int signal, siginfo_t* info, void* context) {
+    static_cast<void>(context);
+
+    // @Incomplete: snprintf, backtrace, system, and more are classified as
+    // "asynchronous signal handler unsafe", meaning that since this handler
+    // can be called in the middle of an in-progress operation, calling
+    // "unsafe" functions means there's no guarantee the operation goes as
+    // expected. Since this handler is intended to be fatal, it doesn't matter
+    // much for the things that are potentially being interrupted outside, but
+    // it could possibly cause errors if this function is being entered by two
+    // separate signals at the same time.
+
+    char message[MESSAGE_MAX];
     switch (signal) {
-        case SIGSEGV: {
-            LOG_ERROR("A segmentation fault occurred at memory address %p.", info->si_addr);
+        case SIGABRT: {
+            snprintf(message, MESSAGE_MAX, "The process was told to abort.");
+            break;
+        }
+        case SIGBUS: {
+            snprintf(message, MESSAGE_MAX,"Access to an undefined portion of a memory object at address %p occurred. %s", info->si_addr, describe_bus_error(info->si_code));
+            break;
+        }
+        case SIGILL: {
+            snprintf(message, MESSAGE_MAX, "An illegal instruction was given at address %p. %s", info->si_addr, describe_illegal_instruction(info->si_code));
             break;
         }
         case SIGFPE: {
-            LOG_ERROR("An arithmetic exception occurred - %s", describe_arithmetic_exception(info->si_code));
+            snprintf(message, MESSAGE_MAX, "An arithmetic exception occurred at address %p. %s", info->si_addr, describe_arithmetic_exception(info->si_code));
+            break;
+        }
+        case SIGSEGV: {
+            snprintf(message, MESSAGE_MAX, "A segmentation fault occurred at memory address %p. %s", info->si_addr, describe_segmentation_fault(info->si_code));
+            break;
+        }
+        case SIGTRAP: {
+            snprintf(message, MESSAGE_MAX, "A trap instruction was encountered at memory address %p. %s", info->si_addr, describe_trap(info->si_code));
             break;
         }
     }
+    LOG_ERROR("%s", message);
 
     log_stack_trace();
 
-    system("zenity --error --text=\"mandible encountered an error it was not "
-           "able to recover from. Check the log for specifics!\"");
+    char command[COMMAND_MAX];
+    snprintf(command, COMMAND_MAX, "zenity --error --text=\"mandible encountered an error it was not able to recover from.\n\n%s\n\nCheck the log for more specifics.\"", message);
+    int result = system(command);
+    static_cast<void>(result);
 
-    std::exit(EXIT_FAILURE);
+    if (signal == SIGTRAP) {
+        raise(signal);
+    }
+}
+
+const char* describe_signal(int signal) {
+    switch (signal) {
+        case SIGABRT: return "process abort";
+        case SIGBUS:  return "bus error";
+        case SIGFPE:  return "arithmetic exception";
+        case SIGILL:  return "illegal instruction";
+        case SIGSEGV: return "segmentation fault";
+        case SIGTRAP: return "trace trap";
+        default:      return "unknown signal";
+    }
 }
 
 bool register_posix_signal_handlers() {
@@ -131,16 +232,22 @@ bool register_posix_signal_handlers() {
     // Register the POSIX signal handlers.
     {
         struct sigaction action = {};
-        action.sa_flags = SA_SIGINFO | SA_STACK;
+        action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
         sigemptyset(&action.sa_mask);
         action.sa_sigaction = handle_posix_signal;
-        if (sigaction(SIGSEGV, &action, nullptr) == -1) {
-            LOG_ERROR("The signal action for handling segmentation faults could not be set.");
-            return false;
-        }
-        if (sigaction(SIGFPE, &action, nullptr) == -1) {
-            LOG_ERROR("The signal action for handling arithmetic exceptions could not be set.");
-            return false;
+        int signals[6] = {
+            SIGABRT,
+            SIGBUS,
+            SIGFPE,
+            SIGILL,
+            SIGSEGV,
+            SIGTRAP,
+        };
+        for (int i = 0; i < 6; ++i) {
+            if (sigaction(signals[i], &action, nullptr) == -1) {
+                LOG_ERROR("Could not set the signal action to handle signals of type %s.", describe_signal(signals[i]));
+                return false;
+            }
         }
     }
 

@@ -1,9 +1,7 @@
 #include "byte_buffer.h"
 
 #include "memory.h"
-
-#include <cassert>
-#include <cstring>
+#include "assert.h"
 
 void clear(ByteBuffer* buffer) {
     DEALLOCATE(buffer->data);
@@ -11,7 +9,7 @@ void clear(ByteBuffer* buffer) {
 }
 
 void insert8(ByteBuffer* buffer, u8 value) {
-    assert(buffer->position <= buffer->end);
+    ASSERT(buffer->position <= buffer->end);
     if (buffer->position >= buffer->end) {
         s64 end = 2 * buffer->end;
         if (end < 16) {
@@ -24,7 +22,7 @@ void insert8(ByteBuffer* buffer, u8 value) {
         }
         buffer->end = end;
         if (buffer->data) {
-            std::memcpy(data, buffer->data, buffer->end);
+            copy_memory(data, buffer->data, buffer->end);
             DEALLOCATE(buffer->data);
         }
         buffer->data = data;
@@ -75,30 +73,24 @@ u8 extract8(ByteBuffer* buffer) {
 }
 
 u16 extract16(ByteBuffer* buffer) {
-    u16 x;
-    x = extract8(buffer);
-    x |= static_cast<u16>(extract8(buffer)) << 8;
-    return x;
+    return extract8(buffer)
+         | static_cast<u16>(extract8(buffer)) << 8;
 }
 
 u32 extract32(ByteBuffer* buffer) {
-    u32 x;
-    x = extract8(buffer);
-    x |= static_cast<u32>(extract8(buffer)) << 8;
-    x |= static_cast<u32>(extract8(buffer)) << 16;
-    x |= static_cast<u32>(extract8(buffer)) << 24;
-    return x;
+    return extract8(buffer)
+         | static_cast<u32>(extract8(buffer)) << 8
+         | static_cast<u32>(extract8(buffer)) << 16
+         | static_cast<u32>(extract8(buffer)) << 24;
 }
 
 u64 extract64(ByteBuffer* buffer) {
-    u64 x;
-    x = extract8(buffer);
-    x |= static_cast<u64>(extract8(buffer)) << 8;
-    x |= static_cast<u64>(extract8(buffer)) << 16;
-    x |= static_cast<u64>(extract8(buffer)) << 24;
-    x |= static_cast<u64>(extract8(buffer)) << 32;
-    x |= static_cast<u64>(extract8(buffer)) << 40;
-    x |= static_cast<u64>(extract8(buffer)) << 48;
-    x |= static_cast<u64>(extract8(buffer)) << 56;
-    return x;
+    return extract8(buffer)
+         | static_cast<u64>(extract8(buffer)) << 8
+         | static_cast<u64>(extract8(buffer)) << 16
+         | static_cast<u64>(extract8(buffer)) << 24
+         | static_cast<u64>(extract8(buffer)) << 32
+         | static_cast<u64>(extract8(buffer)) << 40
+         | static_cast<u64>(extract8(buffer)) << 48
+         | static_cast<u64>(extract8(buffer)) << 56;
 }

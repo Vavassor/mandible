@@ -1,10 +1,26 @@
 #include "wave_decoder.h"
 
+#if defined(WAVE_USE_STDIO)
 #include <cstdio>
+#else
+#include "asset_handling.h"
+#endif
+
 #include <cstdlib>
 #include <cstdint>
-#include <cstring>
 #include <cassert>
+
+using std::size_t;
+using std::malloc;
+using std::free;
+#if defined(WAVE_USE_STDIO)
+using std::FILE;
+using std::fgetc;
+using std::fread;
+using std::fseek;
+using std::fopen;
+using std::fclose;
+#endif
 
 typedef uint8_t  u8;
 typedef uint16_t u16;
@@ -57,8 +73,14 @@ struct WaveDecoder {
         u32 block_size;
     } encoded;
 
+    WaveMemory memory;
+
     s64 data_chunk_position; // where the data chunk is in the file, as an offset in bytes
-    std::FILE* file;
+#if defined(WAVE_USE_STDIO)
+    FILE* file;
+#else
+    File* file;
+#endif
     bool end_of_file;
     u32 frame_count;
     u32 frames_left;
@@ -70,13 +92,42 @@ struct WaveDecoder {
     u8 channels;
 };
 
+static void* allocate(WaveDecoder* decoder, size_t bytes) {
+    if (decoder->memory.block) {
+        if (decoder->memory.position + bytes > decoder->memory.block_size) {
+            return nullptr;
+        }
+        void* block = static_cast<u8*>(decoder->memory.block)
+                    + decoder->memory.position;
+        decoder->memory.position += bytes;
+        return block;
+    }
+    return malloc(bytes);
+}
+
+static void deallocate(WaveDecoder* decoder, void* memory) {
+    if (decoder->memory.block) {
+        return;
+    }
+    free(memory);
+}
+
 static inline u8 extract8(WaveDecoder* decoder) {
-   int byte = std::fgetc(decoder->file);
-   if (byte == EOF) {
-       decoder->end_of_file = true;
-       return 0;
-   }
-   return byte;
+#if defined(WAVE_USE_STDIO)
+    int byte = fgetc(decoder->file);
+    if (byte == EOF) {
+        decoder->end_of_file = true;
+        return 0;
+    }
+#else
+    u8 byte;
+    s64 bytes_read = read_file(decoder->file, &byte, 1);
+    if (bytes_read <= 0) {
+        decoder->end_of_file = true;
+        return 0;
+    }
+#endif
+    return byte;
 }
 
 static inline u16 extract16(WaveDecoder* decoder) {
@@ -95,21 +146,28 @@ static inline u32 extract32(WaveDecoder* decoder) {
     return x;
 }
 
-static std::size_t extract_bytes(WaveDecoder* decoder, u8* data,
-                                 std::size_t bytes) {
-    std::size_t bytes_read = std::fread(data, 1, bytes, decoder->file);
+static size_t extract_bytes(WaveDecoder* decoder, u8* data, size_t bytes) {
+#if defined(WAVE_USE_STDIO)
+    size_t bytes_read = fread(data, 1, bytes, decoder->file);
+#else
+    s64 bytes_read = read_file(decoder->file, data, bytes);
+#endif
     if (bytes_read != bytes) {
         decoder->end_of_file = true;
     }
     return bytes_read;
 }
 
-static void skip_bytes(WaveDecoder* decoder, std::size_t bytes) {
-    std::fseek(decoder->file, bytes, SEEK_CUR);
+static void skip_bytes(WaveDecoder* decoder, size_t bytes) {
+#if defined(WAVE_USE_STDIO)
+    fseek(decoder->file, bytes, SEEK_CUR);
+#else
+    seek_file_forward(decoder->file, bytes);
+#endif
 }
 
-static std::size_t get_ms_adpcm_specific(WaveDecoder* decoder) {
-    std::size_t bytes_read;
+static size_t get_ms_adpcm_specific(WaveDecoder* decoder) {
+    size_t bytes_read;
 
     u16 frames_per_block = extract16(decoder);
     decoder->ms_adpcm_data.frames_per_block = frames_per_block;
@@ -118,8 +176,8 @@ static std::size_t get_ms_adpcm_specific(WaveDecoder* decoder) {
     assert(num_coefficients < 256);
     decoder->ms_adpcm_data.num_coefficients = num_coefficients;
     for (u16 i = 0; i < num_coefficients; ++i) {
-        decoder->ms_adpcm_data.coefficients[i][0] = static_cast<s16>(extract16(decoder));
-        decoder->ms_adpcm_data.coefficients[i][1] = static_cast<s16>(extract16(decoder));
+        decoder->ms_adpcm_data.coefficients[i][0] = extract16(decoder);
+        decoder->ms_adpcm_data.coefficients[i][1] = extract16(decoder);
     }
 
     bytes_read = 2 * sizeof(u16);
@@ -152,7 +210,18 @@ DEFINE_WAVE_FORMAT_GUID(STATIC_KSDATAFORMAT_SUBTYPE_ADPCM, WAVE_FORMAT_ADPCM);
 DEFINE_WAVE_FORMAT_GUID(STATIC_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT);
 #define KSDATAFORMAT_SUBTYPE_IEEE_FLOAT STATIC_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
 
-#define GUID_EQUALS(a, b) (!std::memcmp(&(a), &(b), sizeof(GUID)))
+static int compare_memory(const void* a, const void* b, size_t bytes) {
+    const u8* p1 = static_cast<const u8*>(a);
+    const u8* p2 = static_cast<const u8*>(b);
+    for (; bytes-- ; p1++, p2++) {
+        if (*p1 != *p2) {
+            return *p1 - *p2;
+        }
+    }
+    return 0;
+}
+
+#define GUID_EQUALS(a, b) (!compare_memory(&(a), &(b), sizeof(GUID)))
 
 static bool read_format_chunk(WaveDecoder* decoder, u32 chunk_size) {
     u16 format_type = extract16(decoder);
@@ -185,7 +254,7 @@ static bool read_format_chunk(WaveDecoder* decoder, u32 chunk_size) {
             decoder->format = Format::MS_ADPCM;
 
             u16 extension_size = extract16(decoder);
-            std::size_t bytes_read = get_ms_adpcm_specific(decoder);
+            size_t bytes_read = get_ms_adpcm_specific(decoder);
             if (extension_size > bytes_read) {
                 skip_bytes(decoder, extension_size - bytes_read);
             }
@@ -209,7 +278,7 @@ static bool read_format_chunk(WaveDecoder* decoder, u32 chunk_size) {
             u16 valid_bits_per_sample = extract16(decoder);
             u32 channel_mask = extract32(decoder);
 
-            GUID guid = {0};
+            GUID guid = {};
             guid.data1 = extract32(decoder);
             guid.data2 = extract16(decoder);
             guid.data3 = extract16(decoder);
@@ -220,7 +289,7 @@ static bool read_format_chunk(WaveDecoder* decoder, u32 chunk_size) {
 
             } else if (GUID_EQUALS(guid, KSDATAFORMAT_SUBTYPE_ADPCM)) {
                 decoder->format = Format::MS_ADPCM;
-                std::size_t bytes_read = get_ms_adpcm_specific(decoder);
+                size_t bytes_read = get_ms_adpcm_specific(decoder);
                 extension_size -= 22 + bytes_read;
 
             } else if (GUID_EQUALS(guid, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)) {
@@ -245,13 +314,13 @@ static bool read_format_chunk(WaveDecoder* decoder, u32 chunk_size) {
     return true;
 }
 
-static bool ready_for_data_chunk(WaveDecoder* decoder, u32 chunk_size) {
+static WaveOpenError ready_for_data_chunk(WaveDecoder* decoder, u32 chunk_size) {
     // The data chunk has been found. But, since the format and fact chunks are
     // supposed to be before the data chunk, there needs to be validation here
     // that those chunks have already been processed. So, check that the
     // specification has been filled out.
     if (decoder->format == Format::None) {
-        return false;
+        return WaveOpenError::Format_Chunk_Unread;
     }
 
     // Since the specification doesn't necessarily require WAVE_FORMAT_PCM
@@ -262,7 +331,11 @@ static bool ready_for_data_chunk(WaveDecoder* decoder, u32 chunk_size) {
         decoder->frame_count = chunk_size / decoder->block_alignment;
     }
 
+#if defined(WAVE_USE_STDIO)
     decoder->data_chunk_position = ftell(decoder->file);
+#else
+    decoder->data_chunk_position = get_file_offset(decoder->file);
+#endif
     decoder->frames_left = decoder->frame_count;
 
     if (decoder->format == Format::MS_ADPCM) {
@@ -277,16 +350,20 @@ static bool ready_for_data_chunk(WaveDecoder* decoder, u32 chunk_size) {
         decoder->decoded.buffer_size = block_size;
     }
 
-    decoder->encoded.block = std::malloc(decoder->encoded.block_size);
-    decoder->decoded.buffer = std::malloc(decoder->decoded.buffer_size);
+    decoder->encoded.block = allocate(decoder, decoder->encoded.block_size);
+    decoder->decoded.buffer = allocate(decoder, decoder->decoded.buffer_size);
+
+    if (!decoder->encoded.block || !decoder->decoded.buffer) {
+        return WaveOpenError::Out_Of_Memory;
+    }
 
     decoder->decoded.frames = 0;
     decoder->decoded.start = 0;
 
-    return true;
+    return WaveOpenError::None;
 }
 
-static bool determine_format_and_ready(WaveDecoder* decoder) {
+static WaveOpenError determine_format_and_ready(WaveDecoder* decoder) {
     // Loop through all the RIFF chunks in the file until a waveform chunk is
     // found.
     while (!decoder->end_of_file) {
@@ -307,7 +384,7 @@ static bool determine_format_and_ready(WaveDecoder* decoder) {
                     switch (tag) {
                         case FMT_TAG: {
                             if (!read_format_chunk(decoder, chunk_size)) {
-                                return false;
+                                return WaveOpenError::Format_Chunk_Unread;
                             }
                             break;
                         }
@@ -342,7 +419,7 @@ static bool determine_format_and_ready(WaveDecoder* decoder) {
         }
     }
 
-    return false;
+    return WaveOpenError::None;
 }
 
 struct MsAdpcmState {
@@ -494,16 +571,16 @@ static inline double pull_double(const void* buffer) {
     return *(reinterpret_cast<double*>(&x));
 }
 
-static std::size_t round_up(std::size_t x, std::size_t multiple) {
+static size_t round_up(size_t x, size_t multiple) {
     return x + multiple - 1 - (x - 1) % multiple;
 }
 
 static void fetch_and_decode_block(WaveDecoder* decoder) {
     // Fill the internal buffer with sample data bytes from file.
 
-    std::size_t bytes_requested;
+    size_t bytes_requested;
     bytes_requested = decoder->encoded.block_size;
-    std::size_t data_bytes_left;
+    size_t data_bytes_left;
     if (decoder->format == Format::MS_ADPCM) {
         data_bytes_left = (decoder->frames_left * decoder->channels) / 2;
         data_bytes_left = round_up(data_bytes_left,
@@ -519,7 +596,7 @@ static void fetch_and_decode_block(WaveDecoder* decoder) {
         return;
     }
 
-    std::size_t bytes_got =
+    size_t bytes_got =
             extract_bytes(decoder, static_cast<u8*>(decoder->encoded.block),
                           bytes_requested);
 
@@ -678,7 +755,11 @@ int wave_decode_interleaved(WaveDecoder* decoder, int out_channels,
 void wave_seek_start(WaveDecoder* decoder) {
     decoder->decoded.frames = 0;
     decoder->decoded.start = 0;
-    std::fseek(decoder->file, decoder->data_chunk_position, SEEK_SET);
+#if defined(WAVE_USE_STDIO)
+    fseek(decoder->file, decoder->data_chunk_position, SEEK_SET);
+#else
+    seek_file(decoder->file, decoder->data_chunk_position);
+#endif
     decoder->frames_left = decoder->frame_count;
 }
 
@@ -686,17 +767,31 @@ int wave_channels(WaveDecoder* decoder) {
     return decoder->channels;
 }
 
-WaveDecoder* wave_open_file(const char* filename) {
+WaveDecoder* wave_open_file(const char* filename, WaveOpenError* error,
+                            WaveMemory* memory) {
     WaveDecoder* decoder;
 
-    decoder = static_cast<WaveDecoder*>(std::calloc(1, sizeof(WaveDecoder)));
+    WaveDecoder temp_decoder = {};
+    if (memory) {
+        temp_decoder.memory = *memory;
+        temp_decoder.memory.position = 0;
+    }
+    decoder = static_cast<WaveDecoder*>(allocate(&temp_decoder,
+                                                 sizeof(WaveDecoder)));
     if (!decoder) {
         // Failed to allocate the memory needed to decode the wave file.
+        *error = WaveOpenError::Out_Of_Memory;
         return nullptr;
     }
+    *decoder = temp_decoder;
 
-    std::FILE* file;
-    file = std::fopen(filename, "rb");
+#if defined(WAVE_USE_STDIO)
+    FILE* file;
+    file = fopen(filename, "rb");
+#else
+    File* file;
+    file = open_file(FileType::Asset_Audio, FileMode::Read, filename);
+#endif
     if (!file) {
         // The file was not able to be opened.
         wave_close_file(decoder);
@@ -704,7 +799,9 @@ WaveDecoder* wave_open_file(const char* filename) {
     }
     decoder->file = file;
 
-    if (!determine_format_and_ready(decoder)) {
+    WaveOpenError result = determine_format_and_ready(decoder);
+    if (result != WaveOpenError::None) {
+        *error = result;
         // File was not of a supported format or was corrupted in some way that
         // would prevent it from being decoded properly.
         wave_close_file(decoder);
@@ -717,14 +814,18 @@ WaveDecoder* wave_open_file(const char* filename) {
 void wave_close_file(WaveDecoder* decoder) {
     if (decoder) {
         if (decoder->file) {
-            std::fclose(decoder->file);
+#if defined(WAVE_USE_STDIO)
+            fclose(decoder->file);
+#else
+            close_file(decoder->file);
+#endif
         }
         if (decoder->encoded.block) {
-            std::free(decoder->encoded.block);
+            deallocate(decoder, decoder->encoded.block);
         }
         if (decoder->decoded.buffer) {
-            std::free(decoder->decoded.buffer);
+            deallocate(decoder, decoder->decoded.buffer);
         }
-        std::free(decoder);
+        deallocate(decoder, decoder);
     }
 }

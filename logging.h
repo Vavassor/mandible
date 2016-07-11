@@ -2,6 +2,8 @@
 
 namespace logging {
 	enum class Level { Error, Info, Debug, };
+	bool startup();
+	void shutdown();
 	void add_message(Level level, const char* format, ...);
 }
 
@@ -11,4 +13,5 @@ namespace logging {
 #define LOG_DEBUG(format, ...) logging::add_message(logging::Level::Debug, (format), ##__VA_ARGS__)
 #endif
 
+#define LOG_INFO(format, ...)  logging::add_message(logging::Level::Info,  (format), ##__VA_ARGS__)
 #define	LOG_ERROR(format, ...) logging::add_message(logging::Level::Error, (format), ##__VA_ARGS__)

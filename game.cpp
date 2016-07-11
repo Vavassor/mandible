@@ -9,20 +9,32 @@
 #include "array_macros.h"
 #include "memory.h"
 #include "logging.h"
-#include "monitoring.h"
+#include "profile.h"
 #include "ani_file.h"
-#include "wld_file.h"
+#include "wor_file.h"
+#include "asset_handling.h"
 
 #include <cmath>
 #include <cfloat>
 #include <cstdio>
 
-static void load_atlas(Atlas* atlas, const char* name) {
-    char path[256];
-    copy_string(path, "Assets/", sizeof path);
-    append_string(path, name, sizeof path);
-    atlas->data = stbi_load(path, &atlas->width, &atlas->height,
-                            &atlas->bytes_per_pixel, 0);
+using std::abs;
+using std::fmax;
+using std::isless;
+using std::snprintf;
+
+static bool load_atlas(Atlas* atlas, const char* name) {
+    void* data;
+    s64 data_size;
+    bool loaded = load_whole_file(FileType::Asset_Image, name, &data, &data_size);
+    if (!loaded) {
+        return false;
+    }
+    atlas->data = stbi_load_from_memory(static_cast<u8*>(data), data_size,
+                                        &atlas->width, &atlas->height,
+                                        &atlas->bytes_per_pixel, 0);
+    DEALLOCATE(data);
+    return atlas->data;
 }
 
 static void unload_atlas(Atlas* atlas) {
@@ -32,12 +44,12 @@ static void unload_atlas(Atlas* atlas) {
 // @Incomplete: This needs to be checked for robustness.
 // Also check the effects of /fp:fast (MSVC) and -funsafe-math-optimizations (GCC).
 bool doubles_equal(double x, double y) {
-    double fx = std::abs(x);
-    double fy = std::abs(y);
-    double max_value = std::fmax(std::fmax(1.0, fx), fy);
-    double difference = std::abs(x - y);
+    double fx = abs(x);
+    double fy = abs(y);
+    double max_value = fmax(fmax(1.0, fx), fy);
+    double difference = abs(x - y);
     double epsilon = DBL_EPSILON * max_value;
-    return std::isless(difference, epsilon);
+    return isless(difference, epsilon);
 }
 
 bool double_is_zero(double x) {
@@ -82,13 +94,13 @@ struct Player {
 };
 
 static bool overlap_entity(Entity* entity, int x, int y) {
-    return std::abs(x - entity->center.x) <= entity->extents.x
-        && std::abs(y - entity->center.y) <= entity->extents.y;
+    return abs(x - entity->center.x) <= entity->extents.x
+        && abs(y - entity->center.y) <= entity->extents.y;
 }
 
 static bool entities_overlap(Entity* a, Entity* b) {
-    return std::abs(a->center.x - b->center.x) < a->extents.x + b->extents.x
-        && std::abs(a->center.y - b->center.y) < a->extents.y + b->extents.y;
+    return abs(a->center.x - b->center.x) < a->extents.x + b->extents.x
+        && abs(a->center.y - b->center.y) < a->extents.y + b->extents.y;
 }
 
 enum class Mode { Play, Edit, };
@@ -114,7 +126,7 @@ namespace {
 
     Player player;
     Mode mode = Mode::Play;
-    bool show_monitoring_overlay = false;
+    bool show_profiling_overlay = true;
     bool show_fps_counter = true;
     int fps_counter;
 
@@ -122,22 +134,24 @@ namespace {
 }
 
 void startup() {
-    bm_font_load(&test_font, "Assets/droid_12.fnt");
+    bm_font_load(&test_font, "droid_12.fnt");
     load_atlas(&test_font_atlas, test_font.image.filename);
     load_atlas(&atlas, "player.png");
-    ani::load_asset(&test_animations, "Assets/player.ani");
-    audio::start_stream("grass.ogg", 0.0f, &test_music);
+    ani::load_asset(&test_animations, "player.ani");
+    audio::start_stream("grass.ogg", 0.7f, &test_music);
 
-    const char* wld_filename = "Assets/test.wld";
-    wld::save_chunk(wld_filename);
-    wld::load_chunk(wld_filename);
+    {
+        const char* wor_filename = "test.wor";
+        // wor::save_chunk(wor_filename);
+        wor::load_chunk(wor_filename);
+    }
 
     // random entities
     {
         int extents_x = 8;
         int extents_y = 8;
         random::seed(120);
-        FOR_N(i, ARRAY_COUNT(entities)) {
+        FOR_N (i, ARRAY_COUNT(entities)) {
             Entity* entity = entities + i;
             entity->center.x = random::int_range(extents_x, 480 - extents_x);
             entity->center.y = random::int_range(extents_y, 270 - extents_y);
@@ -175,13 +189,17 @@ void switch_mode(Mode to) {
 }
 
 void update_and_draw(Canvas* canvas) {
+    PROFILE_BEGIN_NAMED("update_and_draw/update");
+
     struct { int x, y; } mouse;
     input::get_mouse_position(&mouse.x, &mouse.y);
 
     input::Controller* controller = input::get_controller();
     if (input::is_button_tapped(controller, input::USER_BUTTON_TAB)) {
-             if (mode == Mode::Play) { switch_mode(Mode::Edit); }
-        else if (mode == Mode::Edit) { switch_mode(Mode::Play); }
+        switch (mode) {
+            case Mode::Play: { switch_mode(Mode::Edit); break; }
+            case Mode::Edit: { switch_mode(Mode::Play); break; }
+        }
     }
 
     switch (mode) {
@@ -285,7 +303,11 @@ void update_and_draw(Canvas* canvas) {
         }
     }
 
+    PROFILE_END();
+
     // Draw everything-----
+
+    PROFILE_BEGIN_NAMED("update_and_draw/draw");
 
     canvas_fill(canvas, 0x00FF00);
 
@@ -323,6 +345,39 @@ void update_and_draw(Canvas* canvas) {
         }
     }
 
+    if (show_profiling_overlay) {
+        int graph_x = 15;
+        int graph_y = 15;
+        int graph_height = 32;
+        int max_slices = 128;
+
+        // Draw the graph background.
+
+        int box_width = max_slices;
+        draw_rectangle_transparent(canvas, graph_x, graph_y, box_width, graph_height, 0x8F000000);
+
+        // an index into the "distinct colour table"
+        const int starting_colour_index = 14;
+        int colour_index = starting_colour_index;
+
+#if 0
+        // Pull the profiling data and draw lines on the graph.
+        FOR_N (i, max_slices - 1) {
+            int x1 = graph_x + i;
+            int x2 = x1 + 1;
+            FOR_N (j, periods) {
+                int y1 = 0;
+                int y2 = 0;
+                u32 colour = distinct_colour_table[colour_index];
+                draw_line(canvas, x1, y1, x2, y2, colour);
+                cycle_increment(&colour_index, ARRAY_COUNT(distinct_colour_table));
+            }
+            colour_index = starting_colour_index;
+        }
+#endif
+    }
+
+#if 0
     if (show_monitoring_overlay) {
         int graph_x = 15;
         int graph_y = 15;
@@ -389,12 +444,15 @@ void update_and_draw(Canvas* canvas) {
         }
         monitoring::unlock();
     }
+#endif
 
     if (show_fps_counter) {
         char text[32];
-        std::snprintf(text, sizeof text, "fps: %i", fps_counter);
+        snprintf(text, sizeof text, "fps: %i", fps_counter);
         draw_text(canvas, &test_font_atlas, &test_font, text, 5, 0);
     }
+
+    PROFILE_END();
 }
 
 void update_fps(int count) {

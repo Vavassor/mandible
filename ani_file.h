@@ -1,5 +1,6 @@
 #pragma once
 
+// .ani animation file format
 namespace ani {
 
 struct Frame {

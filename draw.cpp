@@ -1,17 +1,16 @@
 #include "draw.h"
 
 #include "unicode.h"
+#include "memory.h"
+#include "string_utilities.h"
+#include "assert.h"
 
-#include <alloca.h> // @Incomplete: remove dependency on linux-specific stack allocation
-
-#include <cassert>
 #include <cmath>
 
-static std::size_t string_size(const char* string) {
-    const char* s;
-    for (s = string; *s; ++s);
-    return s - string;
-}
+using std::abs;
+using std::sqrt;
+using std::sin;
+using std::cos;
 
 // A colour table maximising the colour difference between each value and all
 // of the others. CIEDE2000 was used as the formula for comparison.
@@ -26,16 +25,20 @@ const u32 distinct_colour_table[64] = {
     0x005F39, 0x6B6882, 0x5FAD4E, 0xA75740, 0xA5FFD2, 0xFFB167, 0x009BFF, 0xE85EBE,
 };
 
-void canvas_fill(Canvas* canvas, u32 colour) {
-    int pixel_count = canvas->width * canvas->height;
-    for (int i = 0; i < pixel_count; ++i) {
-        canvas->pixels[i] = colour;
+static void fill32(void* array, u32 value, int count) {
+    u32* pointer = static_cast<u32*>(array);
+    for (int i = 0; i < count; ++i) {
+        pointer[i] = count;
     }
 }
 
+void canvas_fill(Canvas* canvas, u32 colour) {
+    fill32(canvas->pixels, colour, canvas->width * canvas->height);
+}
+
 static inline void set_pixel(Canvas* canvas, int x, int y, u32 value) {
-    assert(x >= 0 && x < canvas->width);
-    assert(y >= 0 && y < canvas->height);
+    ASSERT(x >= 0 && x < canvas->width);
+    ASSERT(y >= 0 && y < canvas->height);
     canvas->pixels[y * canvas->width + x] = value;
 }
 
@@ -52,8 +55,8 @@ static inline void set_pixel(Canvas* canvas, int x, int y, u32 value) {
 
 static inline void set_pixel_alpha(Canvas* canvas, int x, int y, u32 value) {
 
-    assert(x >= 0 && x < canvas->width);
-    assert(y >= 0 && y < canvas->height);
+    ASSERT(x >= 0 && x < canvas->width);
+    ASSERT(y >= 0 && y < canvas->height);
 
     u8 alpha = GET_ALPHA(value);
     u32 a = alpha + 1;    // alpha
@@ -262,8 +265,8 @@ void draw_line(Canvas* canvas, int x1, int y1, int x2, int y2, u32 colour) {
 
     // Draw the clipped line segment to the canvas.
     {
-        int adx = std::abs(x2 - x1);  // absolute value of delta x
-        int ady = std::abs(y2 - y1);  // absolute value of delta y
+        int adx = abs(x2 - x1);  // absolute value of delta x
+        int ady = abs(y2 - y1);  // absolute value of delta y
         int sdx = sign(x2 - x1); // sign of delta x
         int sdy = sign(y2 - y1); // sign of delta y
         int x = adx / 2;
@@ -298,19 +301,19 @@ void draw_line(Canvas* canvas, int x1, int y1, int x2, int y2, u32 colour) {
 }
 
 static void hue_shift_matrix(double matrix[3][3], double h) {
-    double u = std::cos(h);
-    double w = std::sin(h);
+    double u = cos(h);
+    double w = sin(h);
 
     matrix[0][0] = u + (1.0 - u) / 3.0;
-    matrix[0][1] = 1.0 / 3.0 * (1.0 - u) - std::sqrt(1.0 / 3.0) * w;
-    matrix[0][2] = 1.0 / 3.0 * (1.0 - u) + std::sqrt(1.0 / 3.0) * w;
+    matrix[0][1] = 1.0 / 3.0 * (1.0 - u) - sqrt(1.0 / 3.0) * w;
+    matrix[0][2] = 1.0 / 3.0 * (1.0 - u) + sqrt(1.0 / 3.0) * w;
 
-    matrix[1][0] = 1.0 / 3.0 * (1.0 - u) + std::sqrt(1.0 / 3.0) * w;
+    matrix[1][0] = 1.0 / 3.0 * (1.0 - u) + sqrt(1.0 / 3.0) * w;
     matrix[1][1] = u + 1.0 / 3.0 * (1.0 - u);
-    matrix[1][2] = 1.0 / 3.0 * (1.0 - u) - std::sqrt(1.0 / 3.0) * w;
+    matrix[1][2] = 1.0 / 3.0 * (1.0 - u) - sqrt(1.0 / 3.0) * w;
 
-    matrix[2][0] = 1.0 / 3.0 * (1.0 - u) - std::sqrt(1.0 / 3.0) * w;
-    matrix[2][1] = 1.0 / 3.0 * (1.0 - u) + std::sqrt(1.0 / 3.0) * w;
+    matrix[2][0] = 1.0 / 3.0 * (1.0 - u) - sqrt(1.0 / 3.0) * w;
+    matrix[2][1] = 1.0 / 3.0 * (1.0 - u) + sqrt(1.0 / 3.0) * w;
     matrix[2][2] = u + 1.0 / 3.0 * (1.0 - u);
 }
 
@@ -392,16 +395,14 @@ static bool is_line_break(char32_t codepoint) {
     return false;
 }
 
-#define STACK_ALLOCATE_ARRAY(count, type) \
-    static_cast<type*>(alloca(sizeof(type) * (count)))
-
 void draw_text(Canvas* canvas, Atlas* atlas, BmFont* font, const char* text,
                int cx, int cy) {
 
     int char_count = string_size(text);
     int codepoint_count = utf8_codepoint_count(text);
-    char32_t* codepoints = STACK_ALLOCATE_ARRAY(codepoint_count, char32_t);
+    char32_t* codepoints = ALLOCATE(char32_t, codepoint_count);
     utf8_to_utf32(text, char_count, codepoints, codepoint_count);
+    DEALLOCATE(codepoints);
 
     struct { int x, y; } pen;
     pen.x = cx;

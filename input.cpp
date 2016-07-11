@@ -2,8 +2,10 @@
 
 #include "sized_types.h"
 #include "logging.h"
+#include "profile.h"
 #include "string_utilities.h"
 #include "evdev_text.h"
+#include "assert.h"
 
 #include <X11/keysym.h>
 
@@ -14,21 +16,11 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#include <cstdlib>
-#include <cstring>
 #include <cmath>
-#include <cassert>
+
+using std::sqrt;
 
 // General-Use Functions.......................................................
-
-#define CLEAR_STRUCT(s) \
-    std::memset((s), 0, sizeof *(s));
-
-#define ARRAY_CLEAR(a) \
-    std::memset((a), 0, sizeof (a))
-
-#define ARRAY_COPY(from, to) \
-    std::memcpy((to), (from), sizeof (to));
 
 #define BIT_COUNT(x) ((((x)-1)/(sizeof(long) * 8))+1)
 
@@ -65,17 +57,12 @@ struct KeyboardState {
 };
 
 static void setup_keyboard_state(KeyboardState* keyboard_state) {
-    u32 map[KEY_MAPPING_COUNT];
-    map[KEY_MAPPING_LEFT]  = XK_Left;
-    map[KEY_MAPPING_UP]    = XK_Up;
-    map[KEY_MAPPING_RIGHT] = XK_Right;
-    map[KEY_MAPPING_DOWN]  = XK_Down;
-    map[KEY_MAPPING_A]     = XK_x;
-    map[KEY_MAPPING_TAB]   = XK_Tab;
-
-    ARRAY_COPY(map, keyboard_state->key_map);
-    ARRAY_CLEAR(keyboard_state->keys_pressed);
-    ARRAY_CLEAR(keyboard_state->edge_counts);
+    keyboard_state->key_map[KEY_MAPPING_LEFT]  = XK_Left;
+    keyboard_state->key_map[KEY_MAPPING_UP]    = XK_Up;
+    keyboard_state->key_map[KEY_MAPPING_RIGHT] = XK_Right;
+    keyboard_state->key_map[KEY_MAPPING_DOWN]  = XK_Down;
+    keyboard_state->key_map[KEY_MAPPING_A]     = XK_x;
+    keyboard_state->key_map[KEY_MAPPING_TAB]   = XK_Tab;
 }
 
 static void press_key(KeyboardState* keyboard_state, u32 key_symbol) {
@@ -304,7 +291,7 @@ static bool js_setup_device(Device* device) {
 
 static void add_device(DeviceCollection* device_collection, udev_device* device) {
     if (device_collection->device_count >= DEVICE_COLLECTION_MAX) {
-        assert(!"too many input devices!");
+        ASSERT(!"too many input devices!");
         return;
     }
 
@@ -367,7 +354,7 @@ static void add_device(DeviceCollection* device_collection, udev_device* device)
 
 static void remove_device(DeviceCollection* device_collection, udev_device* device) {
     if (device_collection->device_count <= 0) {
-        assert(!"no devices to remove");
+        ASSERT(!"no devices to remove");
         return;
     }
 
@@ -409,7 +396,7 @@ static void force_detect_devices(udev* context, DeviceCollection* device_collect
 static void check_device_monitor(udev_monitor* device_monitor, DeviceCollection* device_collection) {
     // the file descriptor for the monitor
     int fd = udev_monitor_get_fd(device_monitor);
-    assert(fd >= 0); // fd is supposed to be guaranteed valid but assert to be sure
+    ASSERT(fd >= 0); // fd is supposed to be guaranteed valid but assert to be sure
 
     fd_set fds;
     FD_ZERO(&fds);
@@ -494,7 +481,7 @@ static void update_controller_from_keyboard_state(Controller* controller, Keyboa
     if (is_key_down(keyboard_state, KEY_MAPPING_UP)) {
         dy += 1.0;
     }
-    double magnitude = std::sqrt(dx * dx + dy * dy);
+    double magnitude = sqrt(dx * dx + dy * dy);
     if (magnitude > 0.0) {
         controller->axes[USER_AXIS_HORIZONTAL] = dx / magnitude;
         controller->axes[USER_AXIS_VERTICAL] = dy / magnitude;
@@ -606,6 +593,7 @@ void shutdown() {
 }
 
 void poll() {
+    PROFILE_SCOPED();
     check_device_monitor(device_monitor, &device_collection);
     update_controller_from_keyboard_state(&controller, &keyboard_state);
     update_key_change_counts(&keyboard_state);

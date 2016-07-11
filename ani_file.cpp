@@ -3,15 +3,14 @@
 #include "logging.h"
 #include "string_utilities.h"
 #include "memory.h"
-#include "file_handling.h"
+#include "asset_handling.h"
 #include "byte_buffer.h"
+#include "assert.h"
 
-#include <cstring>
-#include <cassert>
 #include <cinttypes>
 
 static void seek_buffer(ByteBuffer* buffer, s64 offset) {
-    assert(offset >= 0);
+    ASSERT(offset >= 0);
     if (offset > 0) {
         buffer->position += offset;
         if (buffer->position < 0) {
@@ -26,7 +25,7 @@ static void seek_buffer(ByteBuffer* buffer, s64 offset) {
 namespace ani {
 
 /*
-ANI File Specification
+.ani Animation File Specification
 
 All integers are stored using little-endian byte order.
 fields are listed by field_name : number_of_bytes
@@ -78,7 +77,7 @@ namespace {
 
 bool load_asset(Asset* asset, const char* filename) {
     ByteBuffer buffer = {};
-    bool loaded = load_whole_file(filename, &buffer.data, &buffer.end);
+    bool loaded = load_whole_file(FileType::Asset_Animation, filename, &buffer.data, &buffer.end);
     if (!loaded) {
         LOG_ERROR("Failed to open file %s.", filename);
         return false;
@@ -92,7 +91,7 @@ bool load_asset(Asset* asset, const char* filename) {
                   "was 0x%" PRIx64 ".", signature);
         goto error;
     }
-    assert(version == 1);
+    ASSERT(version == 1);
     if (version == 0) {
         LOG_ERROR("The file was version %i, which this program can't read.",
                   version);
@@ -156,7 +155,7 @@ bool load_asset(Asset* asset, const char* filename) {
                     *pointer = '\0';
                     pointer += 1;
                 }
-                assert(pointer - names <= names_size);
+                ASSERT(pointer - names <= names_size);
                 break;
             }
             default: {
@@ -247,7 +246,7 @@ bool save_asset(Asset* asset, const char* filename) {
         return false;
     }
 
-    bool saved = save_whole_file(filename, buffer.data, buffer.position);
+    bool saved = save_whole_file(FileType::Asset_Animation, filename, buffer.data, buffer.position);
     clear(&buffer);
 
     return saved;

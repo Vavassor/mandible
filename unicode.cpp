@@ -1,9 +1,9 @@
 #include "unicode.h"
 
-char16_t* utf8_to_utf16(const char* s, char16_t* buffer, std::size_t count) {
+char16_t* utf8_to_utf16(const char* s, char16_t* buffer, int count) {
     const unsigned char* str = reinterpret_cast<const unsigned char*>(s);
     --count;
-    std::size_t i = 0;
+    int i = 0;
     while (*str) {
         if (i >= count) {
             return nullptr;
@@ -58,9 +58,9 @@ char16_t* utf8_to_utf16(const char* s, char16_t* buffer, std::size_t count) {
     return buffer;
 }
 
-char* utf16_to_utf8(const char16_t* str, char* buffer, std::size_t count) {
+char* utf16_to_utf8(const char16_t* str, char* buffer, int count) {
     --count;
-    std::size_t i = 0;
+    int i = 0;
     while (*str) {
         char32_t c;
         if (*str < 0x80) {
@@ -97,7 +97,7 @@ char* utf16_to_utf8(const char16_t* str, char* buffer, std::size_t count) {
     return buffer;
 }
 
-static char32_t utf32_at_internal(const char* cur, std::size_t* num_read) {
+static char32_t utf32_at_internal(const char* cur, int* num_read) {
     const char first_char = *cur;
     if ((first_char & 0x80) == 0) {
         // ASCII
@@ -106,7 +106,7 @@ static char32_t utf32_at_internal(const char* cur, std::size_t* num_read) {
     }
     ++cur;
 
-    std::size_t num_to_read = 0;
+    int num_to_read = 0;
     char32_t mask, to_ignore_mask;
     char32_t codepoint = first_char;
     for (num_to_read = 1, mask = 0x40, to_ignore_mask = 0xFFFFFF80;
@@ -122,8 +122,7 @@ static char32_t utf32_at_internal(const char* cur, std::size_t* num_read) {
     return codepoint;
 }
 
-std::size_t utf8_to_utf32(const char* src, std::size_t src_len,
-                          char32_t* dst, std::size_t dst_len) {
+int utf8_to_utf32(const char* src, int src_len, char32_t* dst, int dst_len) {
 
     if (!src || src_len == 0 || !dst || dst_len == 0) {
         return 0;
@@ -134,7 +133,7 @@ std::size_t utf8_to_utf32(const char* src, std::size_t src_len,
     char32_t* cur_utf32 = dst;
     const char32_t* end_utf32 = dst + dst_len;
     while (cur_utf32 < end_utf32 && cur < end) {
-        std::size_t num_read;
+        int num_read;
         *cur_utf32++ = utf32_at_internal(cur, &num_read);
         cur += num_read;
     }
@@ -142,11 +141,11 @@ std::size_t utf8_to_utf32(const char* src, std::size_t src_len,
         *cur_utf32 = 0;
     }
 
-    return static_cast<std::size_t>(cur_utf32 - dst);
+    return static_cast<int>(cur_utf32 - dst);
 }
 
-std::size_t utf8_surrogate_count(const char* str) {
-    std::size_t count = 0;
+int utf8_surrogate_count(const char* str) {
+    int count = 0;
     const char* s = str;
     while (*s) {
         if (!(*s & 0x80))             { s += 1; count += 1; }
@@ -158,8 +157,8 @@ std::size_t utf8_surrogate_count(const char* str) {
     return count;
 }
 
-std::size_t utf16_octet_count(const char16_t* str) {
-    std::size_t count = 0;
+int utf16_octet_count(const char16_t* str) {
+    int count = 0;
     const char16_t* s = str;
     while (*s) {
         if (*s < 0x80)                        { count += 1; s += 1; }
@@ -171,17 +170,17 @@ std::size_t utf16_octet_count(const char16_t* str) {
     return count;
 }
 
-std::size_t utf8_codepoint_count(const char* s) {
-    std::size_t count = 0;
+int utf8_codepoint_count(const char* s) {
+    int count = 0;
     while (*s) {
         count += (*s++ & 0xc0) != 0x80;
     }
     return count;
 }
 
-std::size_t utf32_octet_count(const char32_t* s, std::size_t n) {
-    std::size_t count = 0;
-    for (std::size_t i = 0; i < n; ++i) {
+int utf32_octet_count(const char32_t* s, int n) {
+    int count = 0;
+    for (int i = 0; i < n; ++i) {
         if (s[i] < 0x80)         count += 1;
         else if (s[i] < 0x800)   count += 2;
         else if (s[i] < 0x10000) count += 3;

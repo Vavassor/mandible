@@ -3,20 +3,20 @@
 #include "sized_types.h"
 #include "atomic.h"
 #include "logging.h"
-#include "wave_decoder.h"
 #include "string_utilities.h"
-#include "monitoring.h"
 #include "array_macros.h"
 #include "memory.h"
+#include "wave_decoder.h"
+#include "profile.h"
+#include "assert.h"
+#include "asset_handling.h"
 
-#define STB_VORBIS_HEADER_ONLY
+#define STB_VORBIS_NO_STDIO
 #include "stb_vorbis.c"
 
 #include <alsa/asoundlib.h>
 
 #include <pthread.h>
-
-#include <cstring>
 
 namespace audio {
 
@@ -35,7 +35,7 @@ enum Format {
     FORMAT_F64, // 64-bit Floating-point
 };
 
-static std::size_t format_byte_count(Format format) {
+static int format_byte_count(Format format) {
     switch (format) {
         case FORMAT_U8:
         case FORMAT_S8:
@@ -65,171 +65,28 @@ struct Int24 {
 };
 typedef Int24 s24; // A 32-bit value pretending to be 24-bits
 
-// Converts numbers between numeric types.
-template <typename From, typename To>
-inline To convert(From value) {
-    // if template types are both the same, just do a regular copy
-    return value;
-}
-
-// - to signed 8-bit integer
-
-template<>
-inline s8 convert<s16, s8>(s16 value) {
-    return (value >> 8) & 0xFF;
-}
-
-template<>
-inline s8 convert<s24, s8>(s24 value) {
-    return (value.x >> 16) & 0xFF;
-}
-
-template<>
-inline s8 convert<s32, s8>(s32 value) {
-    return (value >> 24) & 0xFF;
-}
-
-template<>
-inline s8 convert<float, s8>(float value) {
+inline s8 convert_to_s8(float value) {
     return value * 127.5f - 0.5f;
 }
 
-template<>
-inline s8 convert<double, s8>(double value) {
-    return value * 127.5 - 0.5;
-}
-
-// - to signed 16-bit integer
-
-template<>
-inline s16 convert<s8, s16>(s8 value) {
-    return value << 8;
-}
-
-template<>
-inline s16 convert<s24, s16>(s24 value) {
-    return (value.x >> 8) & 0xFFFF;
-}
-
-template<>
-inline s16 convert<s32, s16>(s32 value) {
-    return (value >> 16) & 0xFFFF;
-}
-
-template<>
-inline s16 convert<float, s16>(float value) {
+inline s16 convert_to_s16(float value) {
     return value * 32767.5f - 0.5f;
 }
 
-template<>
-inline s16 convert<double, s16>(double value) {
-    return value * 32767.5 - 0.5;
-}
-
-// - to signed 24-bit integer
-
-template<>
-inline s24 convert<s8, s24>(s8 value) {
-    return { value << 16 };
-}
-
-template<>
-inline s24 convert<s16, s24>(s16 value) {
-    return { value << 8 };
-}
-
-template<>
-inline s24 convert<s32, s24>(s32 value) {
-    return { (value >> 8) & 0xFFFFFF };
-}
-
-template<>
-inline s24 convert<float, s24>(float value) {
+inline s24 convert_to_s24(float value) {
     return { static_cast<s32>(value * 8388607.5f - 0.5f) };
 }
 
-template<>
-inline s24 convert<double, s24>(double value) {
-    return { static_cast<s32>(value * 8388607.5 - 0.5) };
-}
-
-// - to signed 32-bit integer
-
-template<>
-inline s32 convert<s8, s32>(s8 value) {
-    return value << 24;
-}
-
-template<>
-inline s32 convert<s16, s32>(s16 value) {
-    return value << 16;
-}
-
-template<>
-inline s32 convert<s24, s32>(s24 value) {
-    return value.x << 8;
-}
-
-template<>
-inline s32 convert<float, s32>(float value) {
+inline s32 convert_to_s32(float value) {
     return value * 2147483647.5f - 0.5f;
 }
 
-template<>
-inline s32 convert<double, s32>(double value) {
-    return value * 2147483647.5 - 0.5;
+inline float convert_to_float(float value) {
+    return value;
 }
 
-// - to float
-
-template<>
-inline float convert<s8, float>(s8 value) {
-    static const float scale = static_cast<float>(1.0 / 127.5);
-    return (static_cast<float>(value) + 0.5f) * scale;
-}
-
-template<>
-inline float convert<s16, float>(s16 value) {
-    static const float scale = static_cast<float>(1.0 / 32767.5);
-    return (static_cast<float>(value) + 0.5f) * scale;
-}
-
-template<>
-inline float convert<s24, float>(s24 value) {
-    static const float scale = static_cast<float>(1.0 / 8388607.5);
-    return (static_cast<float>(value.x) + 0.5f) * scale;
-}
-
-template<>
-inline float convert<s32, float>(s32 value) {
-    static const float scale = static_cast<float>(1.0 / 2147483647.5);
-    return (static_cast<float>(value) + 0.5f) * scale;
-}
-
-// - to double
-
-template<>
-inline double convert<s8, double>(s8 value) {
-    static const double scale = 1.0 / 127.5;
-    return (static_cast<double>(value) + 0.5) * scale;
-}
-
-template<>
-inline double convert<s16, double>(s16 value) {
-    static const double scale = 1.0 / 32767.5;
-    return (static_cast<double>(value) + 0.5) * scale;
-}
-
-template<>
-inline double convert<s24, double>(s24 value) {
-    static const double scale = 1.0 / 8388607.5;
-    return (static_cast<double>(value.x) + 0.5) * scale;
-}
-
-template<>
-inline double convert<s32, double>(s32 value) {
-    static const double scale = 1.0 / 2147483647.5;
-    return (static_cast<double>(value) + 0.5) * scale;
+inline double convert_to_double(float value) {
+    return value;
 }
 
 struct ConversionInfo {
@@ -240,63 +97,47 @@ struct ConversionInfo {
     int channels;
 };
 
-template <typename From, typename To>
-static void convert_buffer(const From* in, To* out, int frames,
-                           ConversionInfo* info) {
-    for (int i = 0; i < frames; ++i) {
-        for (int j = 0; j < info->channels; ++j) {
-            out[j] = convert<From, To>(in[j]);
-        }
-        in += info->in.stride;
-        out += info->out.stride;
-    }
+#define DEFINE_CONVERT_BUFFER(type)                                                                  \
+static void convert_buffer_to_##type(const float* in, type* out, int frames, ConversionInfo* info) { \
+    for (int i = 0; i < frames; ++i) {                                                               \
+        for (int j = 0; j < info->channels; ++j) {                                                   \
+            out[j] = convert_to_##type(in[j]);                                                       \
+        }                                                                                            \
+        in += info->in.stride;                                                                       \
+        out += info->out.stride;                                                                     \
+    }                                                                                                \
 }
 
-template <typename From>
-static void convert_from_source_format(From* in, void* out, int frames, ConversionInfo* info) {
-    switch (info->out.format) {
-        case FORMAT_S8:
-            convert_buffer<From, s8>(in, static_cast<s8*>(out), frames, info);
-            break;
-        case FORMAT_S16:
-            convert_buffer<From, s16>(in, static_cast<s16*>(out), frames, info);
-            break;
-        case FORMAT_S24:
-            convert_buffer<From, s24>(in, static_cast<s24*>(out), frames, info);
-            break;
-        case FORMAT_S32:
-            convert_buffer<From, s32>(in, static_cast<s32*>(out), frames, info);
-            break;
-        case FORMAT_F32:
-            convert_buffer<From, float>(in, static_cast<float*>(out), frames, info);
-            break;
-        case FORMAT_F64:
-            convert_buffer<From, double>(in, static_cast<double*>(out), frames, info);
-            break;
-    }
-}
+DEFINE_CONVERT_BUFFER(s8);
+DEFINE_CONVERT_BUFFER(s16);
+DEFINE_CONVERT_BUFFER(s24);
+DEFINE_CONVERT_BUFFER(s32);
+DEFINE_CONVERT_BUFFER(float);
+DEFINE_CONVERT_BUFFER(double);
 
 // This function does format conversion, input/output channel compensation, and
 // data interleaving/deinterleaving.
-static void convert_format(void* in_samples, void* out_samples, int frames, ConversionInfo* info) {
+static void format_buffer_from_float(float* in_samples, void* out_samples, int frames, ConversionInfo* info) {
+    PROFILE_SCOPED();
+
     switch (info->in.format) {
         case FORMAT_S8:
-            convert_from_source_format<s8>(static_cast<s8*>(in_samples), out_samples, frames, info);
+            convert_buffer_to_s8(in_samples, static_cast<s8*>(out_samples), frames, info);
             break;
         case FORMAT_S16:
-            convert_from_source_format<s16>(static_cast<s16*>(in_samples), out_samples, frames, info);
+            convert_buffer_to_s16(in_samples, static_cast<s16*>(out_samples), frames, info);
             break;
         case FORMAT_S24:
-            convert_from_source_format<s24>(static_cast<s24*>(in_samples), out_samples, frames, info);
+            convert_buffer_to_s24(in_samples, static_cast<s24*>(out_samples), frames, info);
             break;
         case FORMAT_S32:
-            convert_from_source_format<s32>(static_cast<s32*>(in_samples), out_samples, frames, info);
+            convert_buffer_to_s32(in_samples, static_cast<s32*>(out_samples), frames, info);
             break;
         case FORMAT_F32:
-            convert_from_source_format<float>(static_cast<float*>(in_samples), out_samples, frames, info);
+            convert_buffer_to_float(in_samples, static_cast<float*>(out_samples), frames, info);
             break;
         case FORMAT_F64:
-            convert_from_source_format<double>(static_cast<double*>(in_samples), out_samples, frames, info);
+            convert_buffer_to_double(in_samples, static_cast<double*>(out_samples), frames, info);
             break;
     }
 }
@@ -307,7 +148,7 @@ static void convert_format(void* in_samples, void* out_samples, int frames, Conv
 #define F_TAU 6.28318530717958647692f
 
 static float pitch_to_frequency(int pitch) {
-    return 440.0f * std::pow(2.0f, static_cast<float>(pitch - 69) / 12.0f);
+    return 440.0f * pow(2.0f, static_cast<float>(pitch - 69) / 12.0f);
 }
 
 static void generate_sine_samples(void* samples, int count, int channels,
@@ -319,7 +160,7 @@ static void generate_sine_samples(void* samples, int count, int channels,
     for (int i = 0; i < count; ++i) {
         for (int j = 0; j < channels; ++j) {
             float t = static_cast<float>(i) / sample_rate + time;
-            out[i * channels + j] = amplitude * std::sin(theta * t);
+            out[i * channels + j] = amplitude * sin(theta * t);
         }
     }
 }
@@ -603,6 +444,7 @@ struct Stream {
         } wave;
     };
 
+    void* encoded_samples;
     int channels;
     float* decoded_samples;
     float volume;
@@ -617,7 +459,7 @@ static Stream::DecoderType decoder_type_from_file_extension(const char* extensio
 }
 
 static void fill_with_silence(float* samples, u8 silence, u64 count) {
-    std::memset(samples, silence, sizeof(float) * count);
+    set_memory(samples, silence, sizeof(float) * count);
 }
 
 #define MAX_STREAMS 16
@@ -628,7 +470,9 @@ struct StreamManager {
 };
 
 static int close_stream(StreamManager* manager, int stream_index) {
-    assert(stream_index >= 0 && stream_index < manager->stream_count);
+    ASSERT(stream_index >= 0 && stream_index < manager->stream_count);
+
+    PROFILE_SCOPED();
 
     Stream* stream = manager->streams + stream_index;
     switch (stream->decoder_type) {
@@ -642,6 +486,7 @@ static int close_stream(StreamManager* manager, int stream_index) {
         }
     }
     DEALLOCATE(stream->decoded_samples);
+    DEALLOCATE(stream->encoded_samples);
 
     int last = manager->stream_count - 1;
     if (manager->stream_count > 1 && stream_index != last) {
@@ -653,7 +498,7 @@ static int close_stream(StreamManager* manager, int stream_index) {
 }
 
 static void close_stream_by_id(StreamManager* manager, StreamId stream_id) {
-    FOR_N(i, manager->stream_count) {
+    FOR_N (i, manager->stream_count) {
         Stream* stream = manager->streams + i;
         if (stream->id == stream_id) {
             i = close_stream(manager, i);
@@ -662,7 +507,7 @@ static void close_stream_by_id(StreamManager* manager, StreamId stream_id) {
 }
 
 static void close_all_streams(StreamManager* manager) {
-    FOR_N(i, manager->stream_count) {
+    FOR_N (i, manager->stream_count) {
         i = close_stream(manager, i);
     }
 }
@@ -671,26 +516,45 @@ static void open_stream(StreamManager* stream_manager, const char* filename,
                         u64 samples_to_decode, float volume, bool looping,
                         StreamId id = 0) {
 
-    assert(stream_manager->stream_count < ARRAY_COUNT(stream_manager->streams));
+    ASSERT(stream_manager->stream_count < ARRAY_COUNT(stream_manager->streams));
+
+    PROFILE_SCOPED();
+
     Stream* stream = stream_manager->streams + stream_manager->stream_count;
 
     const char* file_extension = find_string(filename, ".") + 1;
     stream->decoder_type = decoder_type_from_file_extension(file_extension);
 
-    char path[256];
-    copy_string(path, "Assets/", sizeof path);
-    append_string(path, filename, sizeof path);
+    int encoded_buffer_size = KIBIBYTES(128);
+    void* encoded_buffer = nullptr;
 
     switch (stream->decoder_type) {
         case Stream::DecoderType::Vorbis: {
             stb_vorbis* decoder;
-            int open_error = 0;
-            decoder = stb_vorbis_open_filename(path, &open_error, nullptr);
+            int open_error;
+            do {
+                encoded_buffer = heap_reallocate(encoded_buffer,
+                                                 encoded_buffer_size);
+                if (!encoded_buffer) {
+                    LOG_ERROR("Could not obtain appropriate memory to load the"
+                              "Vorbis file %s.", filename);
+                    // @Incomplete: nothing actually happens to fail?
+                }
+                open_error = 0;
+                stb_vorbis_alloc alloc;
+                alloc.alloc_buffer_length_in_bytes = encoded_buffer_size;
+                alloc.alloc_buffer = static_cast<char*>(encoded_buffer);
+                decoder = stb_vorbis_open_filename(filename, &open_error, &alloc);
+                encoded_buffer_size += KIBIBYTES(16);
+            } while(!decoder && open_error == VORBIS_outofmem);
             if (!decoder || open_error) {
-                LOG_ERROR("Vorbis file %s failed to load: %i", path,
+                LOG_ERROR("Vorbis file %s failed to load: %i", filename,
                           open_error);
+                DEALLOCATE(encoded_buffer);
+                // @Incomplete: nothing actually happens to fail this case?
             }
             stream->vorbis.decoder = decoder;
+            stream->encoded_samples = encoded_buffer;
 
             stb_vorbis_info info = stb_vorbis_get_info(stream->vorbis.decoder);
             stream->channels = info.channels;
@@ -698,12 +562,30 @@ static void open_stream(StreamManager* stream_manager, const char* filename,
         }
         case Stream::DecoderType::Wave: {
             WaveDecoder* decoder;
-            decoder = wave_open_file(path);
-            if (!decoder) {
-                LOG_ERROR("Wave file %s failed to load.", path);
+            WaveOpenError open_error = WaveOpenError::None;
+            do {
+                encoded_buffer = heap_reallocate(encoded_buffer,
+                                                 encoded_buffer_size);
+                if (!encoded_buffer) {
+                    LOG_ERROR("Could not obtain appropriate memory to load the"
+                              "Wave file %s.", filename);
+                    // @Incomplete: fail state not handled
+                }
+                open_error = WaveOpenError::None;
+                WaveMemory alloc;
+                alloc.block = encoded_buffer;
+                alloc.block_size = encoded_buffer_size;
+                decoder = wave_open_file(filename, &open_error, &alloc);
+                encoded_buffer_size += KIBIBYTES(16);
+            } while(!decoder && open_error == WaveOpenError::Out_Of_Memory);
+            if (!decoder || open_error != WaveOpenError::None) {
+                LOG_ERROR("Wave file %s failed to load: %i", filename, open_error);
+                DEALLOCATE(encoded_buffer);
+                // @Incomplete: nothing actually happens to fail this case?
             }
             stream->wave.decoder = decoder;
             stream->channels = wave_channels(decoder);
+            stream->encoded_samples = encoded_buffer;
             break;
         }
     }
@@ -716,7 +598,9 @@ static void open_stream(StreamManager* stream_manager, const char* filename,
 }
 
 static void decode_streams(StreamManager* stream_manager, int frames) {
-    FOR_N(i, stream_manager->stream_count) {
+    PROFILE_SCOPED();
+
+    FOR_N (i, stream_manager->stream_count) {
         Stream* stream = stream_manager->streams + i;
         int channels = stream->channels;
         int samples_to_decode = channels * frames;
@@ -759,8 +643,10 @@ static float clamp(float x, float min, float max) {
     return (x < min) ? min : (x > max) ? max : x;
 }
 
-static void mix_streams(StreamManager* stream_manager, float* mix_buffer,
-                        int frames, int channels) {
+static void mix_streams(StreamManager* stream_manager, float* mix_buffer, int frames, int channels) {
+
+    PROFILE_SCOPED();
+
     int samples = frames * channels;
 
     // Mix the streams' samples into the given buffer.
@@ -773,7 +659,7 @@ static void mix_streams(StreamManager* stream_manager, float* mix_buffer,
                 }
             }
         } else if (channels > stream->channels) {
-            assert(stream->channels == 1); // @Incomplete: This path doesn't actually handle stereo-to-surround mixing
+            ASSERT(stream->channels == 1); // @Incomplete: This path doesn't actually handle stereo-to-surround mixing
             FOR_N(j, frames) {
                 float sample = stream->volume * stream->decoded_samples[j*stream->channels];
                 FOR_N(k, channels) {
@@ -876,6 +762,10 @@ namespace {
 }
 
 static void* run_mixer_thread(void* argument) {
+    static_cast<void>(argument);
+
+    PROFILE_SCOPED_THREAD();
+
     specification.channels = 2;
     specification.format = FORMAT_S16;
     specification.sample_rate = 44100;
@@ -885,7 +775,7 @@ static void* run_mixer_thread(void* argument) {
         LOG_ERROR("Failed to open audio device.");
     }
 
-    std::size_t samples = specification.channels * specification.frames;
+    u64 samples = specification.channels * specification.frames;
 
     // Setup mixing.
     mixed_samples = ALLOCATE(float, samples);
@@ -898,12 +788,10 @@ static void* run_mixer_thread(void* argument) {
     conversion_info.out.format = specification.format;
     conversion_info.out.stride = conversion_info.channels;
 
-    int frame_size = conversion_info.channels *
-                     format_byte_count(conversion_info.out.format);
+    int frame_size = conversion_info.channels
+                   * format_byte_count(conversion_info.out.format);
 
     while (atomic_flag_test_and_set(&quit)) {
-        BEGIN_MONITORING(audio);
-
         // Process any messages from the main thread.
         {
             Message message;
@@ -937,13 +825,19 @@ static void* run_mixer_thread(void* argument) {
         mix_streams(&stream_manager, mixed_samples,
                     specification.frames, specification.channels);
 
-        convert_format(mixed_samples, devicebound_samples,
-                       specification.frames, &conversion_info);
+        format_buffer_from_float(mixed_samples, devicebound_samples,
+                                 specification.frames, &conversion_info);
+
+        PROFILE_BEGIN_NAMED("audio::run_mixer_thread/waiting");
 
         int stream_ready = snd_pcm_wait(pcm_handle, 150);
         if (!stream_ready) {
             LOG_ERROR("ALSA device waiting timed out!");
         }
+
+        PROFILE_END();
+
+        PROFILE_BEGIN_NAMED("audio::run_mixer_thread/writing");
 
         u8* buffer = static_cast<u8*>(devicebound_samples);
         snd_pcm_uframes_t frames_left = specification.frames;
@@ -965,11 +859,11 @@ static void* run_mixer_thread(void* argument) {
             frames_left -= frames_written;
         }
 
+        PROFILE_END();
+
         double delta_time = static_cast<double>(specification.frames) /
                             static_cast<double>(specification.sample_rate);
         time += delta_time;
-
-        END_MONITORING(audio);
     }
 
     close_all_streams(&stream_manager);
@@ -997,8 +891,8 @@ void shutdown() {
 void play_once(const char* filename, float volume) {
     Message message;
     message.code = Message::Code::Play_Once;
-    copy_string(message.play_once.filename, filename,
-                sizeof message.play_once.filename);
+    copy_string(message.play_once.filename, sizeof message.play_once.filename,
+                filename);
     message.play_once.volume = volume;
     enqueue_message(&message_queue, &message);
 }
@@ -1019,8 +913,8 @@ void start_stream(const char* filename, float volume,
 
     Message message;
     message.code = Message::Code::Start_Stream;
-    copy_string(message.start_stream.filename, filename,
-                sizeof message.start_stream.filename);
+    copy_string(message.start_stream.filename,
+                sizeof message.start_stream.filename, filename);
     message.start_stream.stream_id = stream_id;
     message.start_stream.volume = volume;
     enqueue_message(&message_queue, &message);

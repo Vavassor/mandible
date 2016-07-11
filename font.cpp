@@ -1,17 +1,9 @@
 #include "font.h"
 
-#include <cstdlib>
-#include <cstdio>
-#include <cstdint>
-#include <cassert>
-
 #include "string_utilities.h"
-
-#define ALLOCATE(type, count) \
-    static_cast<type*>(std::malloc(sizeof(type) * (count)))
-
-#define DEALLOCATE(memory) \
-    std::free(memory)
+#include "memory.h"
+#include "asset_handling.h"
+#include "assert.h"
 
 // Hashing mapping functions...................................................
 
@@ -131,7 +123,7 @@ static int kerning_table_search(BmFont::KerningPair* table, int table_count,
 // General String Search Functions.............................................
 
 static char* find_char(const char* s, char c) {
-    assert(s);
+    ASSERT(s);
     while (*s != c) {
         if (*s++ == '\0') {
             return nullptr;
@@ -140,10 +132,10 @@ static char* find_char(const char* s, char c) {
     return const_cast<char*>(s);
 }
 
-static std::size_t count_span_without_chars(const char* s, const char* set) {
-    assert(s);
-    assert(set);
-    std::size_t count = 0;
+static int count_span_without_chars(const char* s, const char* set) {
+    ASSERT(s);
+    ASSERT(set);
+    int count = 0;
     while (*s) {
         if (find_char(set, *s)) {
             return count;
@@ -177,7 +169,7 @@ static int get_integer(Reader* reader, const char* tag) {
         return 0;
     }
     attribute += string_size(tag) + 1;
-    return std::atoi(attribute);
+    return string_to_int(attribute);
 }
 
 static void seek_to_attribute(Reader* reader, const char* tag) {
@@ -190,7 +182,7 @@ static void seek_to_attribute(Reader* reader, const char* tag) {
     }
 }
 
-static std::size_t get_attribute_size(Reader* reader) {
+static int get_attribute_size(Reader* reader) {
     return count_span_without_chars(reader->current, " \n");
 }
 
@@ -201,31 +193,15 @@ bool bm_font_load(BmFont* font, const char* filename) {
 
     // Fetch the whole .fnt file and copy the contents into memory.
 
-    std::FILE* file = std::fopen(filename, "r");
-    if (!file) {
-        return false;
-    }
-
-    std::fseek(file, 0, SEEK_END);
-    long int total_bytes = std::ftell(file);
-    std::fseek(file, 0, SEEK_SET);
-
-    char* data = ALLOCATE(char, total_bytes + 1);
-    if (!data) {
-        std::fclose(file);
-        return false;
-    }
-    data[total_bytes] = '\0';
-
-    std::size_t read_count = std::fread(data, total_bytes, 1, file);
-    std::fclose(file);
-    if (read_count != 1) {
-        DEALLOCATE(data);
+    void* data;
+    s64 total_bytes;
+    bool loaded = load_whole_file(FileType::Asset_Font, filename, &data, &total_bytes);
+    if (!loaded) {
         return false;
     }
 
     Reader reader = {};
-    reader.current = data;
+    reader.current = static_cast<char*>(data);
 
     // Info section
     seek_in_line(&reader, "info");
@@ -246,17 +222,17 @@ bool bm_font_load(BmFont* font, const char* filename) {
     seek_next_line(&reader);
 
     // Page section
-    assert(num_pages == 1);
+    ASSERT(num_pages == 1);
     seek_in_line(&reader, "page");
     seek_to_attribute(&reader, "file");
-    std::size_t filename_size = get_attribute_size(&reader);
+    int filename_size = get_attribute_size(&reader);
     if (filename_size <= 2) {
         DEALLOCATE(data);
         return false;
     }
     filename_size -= 1;
     font->image.filename = ALLOCATE(char, filename_size);
-    copy_string(font->image.filename, reader.current + 1, filename_size);
+    copy_string(font->image.filename, filename_size, reader.current + 1);
     seek_next_line(&reader);
 
     // Char section

@@ -2,14 +2,19 @@
 #include "logging.h"
 #include "input.h"
 #include "audio.h"
-#include "monitoring.h"
 #include "game.h"
 #include "draw.h"
 #include "memory.h"
 #include "string_utilities.h"
 #include "array_macros.h"
 #include "posix_errors.h"
+#include "asset_handling.h"
+#include "profile.h"
 
+#define STBI_NO_STDIO
+#define STBI_MALLOC  heap_allocate
+#define STBI_REALLOC heap_reallocate
+#define STBI_FREE    heap_deallocate
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -20,25 +25,42 @@
 #include "glx_extensions.h"
 #include "gl_shader.h"
 
+#include <sys/resource.h>
+
 #include <time.h>
 
-#include <cstdlib>
 #include <cmath>
 
-struct Image {
+using std::size_t;
+
+struct Icon {
     u8* data;
     int width;
     int height;
     int bytes_per_pixel;
 };
 
-static void load_image(Image* image, const char* name) {
-    image->data = stbi_load(name, &image->width, &image->height,
-                            &image->bytes_per_pixel, 0);
+static void load_icons(Icon* icons, const char** names, int count) {
+    FOR_N (i, count) {
+        void* data;
+        s64 data_size;
+        bool loaded = load_whole_file(FileType::Asset_Icon, names[i], &data,
+                                      &data_size);
+        if (loaded) {
+            Icon* icon = icons + i;
+            icon->data = stbi_load_from_memory(static_cast<u8*>(data),
+                                               data_size,
+                                               &icon->width, &icon->height,
+                                               &icon->bytes_per_pixel, 0);
+            DEALLOCATE(data);
+        }
+    }
 }
 
-static void unload_image(Image* image) {
-    stbi_image_free(image->data);
+static void unload_icons(Icon* icons, int count) {
+    FOR_N (i, count) {
+        stbi_image_free(icons[i].data);
+    }
 }
 
 // Canvas Functions............................................................
@@ -85,26 +107,34 @@ static void go_to_sleep(Clock* clock, double amount_to_sleep) {
 
 static void swap_red_and_blue_in_place(u32* pixels, int pixel_count) {
     for (int i = 0; i < pixel_count; ++i) {
-        pixels[i] = (pixels[i] & 0xFF00FF00) |
-                    (pixels[i] & 0xFF0000) >> 16 |
-                    (pixels[i] & 0xFF) << 16;
+        pixels[i] = (pixels[i] & 0xFF00FF00)
+                  | (pixels[i] & 0xFF0000) >> 16
+                  | (pixels[i] & 0xFF) << 16;
     }
 }
 
 static void swap_red_and_blue(unsigned long* out, u32* in, int pixel_count) {
     for (int i = 0; i < pixel_count; ++i) {
-        out[i] = (in[i] & 0xFF00FF00) |
-                 (in[i] & 0xFF0000) >> 16 |
-                 (in[i] & 0xFF) << 16;
+        out[i] = (in[i] & 0xFF00FF00)
+               | (in[i] & 0xFF0000) >> 16
+               | (in[i] & 0xFF) << 16;
     }
 }
 
 static bool load_pixmap(Pixmap* out_pixmap, Display* display,
-                        const char* name) {
+                        const char* path) {
+    void* data;
+    s64 data_size;
+    bool loaded = load_whole_file(FileType::Asset_Icon, path, &data, &data_size);
+    if (!loaded) {
+        return false;
+    }
     int width;
     int height;
     int bytes_per_pixel;
-    u8* pixel_data = stbi_load(name, &width, &height, &bytes_per_pixel, 0);
+    u8* pixel_data = stbi_load_from_memory(static_cast<u8*>(data), data_size,
+                                           &width, &height, &bytes_per_pixel, 0);
+    DEALLOCATE(data);
     if (!pixel_data) {
         return false;
     }
@@ -112,7 +142,7 @@ static bool load_pixmap(Pixmap* out_pixmap, Display* display,
     swap_red_and_blue_in_place(reinterpret_cast<u32*>(pixel_data),
                                width * height);
 
-    XImage* image;
+    XImage image;
     int depth = 8 * bytes_per_pixel;
     int bitmap_pad; // XCreateImage only accepts values of 8, 16, or 32
     switch (depth) {
@@ -120,26 +150,34 @@ static bool load_pixmap(Pixmap* out_pixmap, Display* display,
         case 16: bitmap_pad = 16; break;
         default: bitmap_pad = 32; break;
     }
-    image = XCreateImage(display, CopyFromParent, depth, ZPixmap, 0,
-                         reinterpret_cast<char*>(pixel_data),
-                         width, height, bitmap_pad, 0);
-    if (!image) {
-        stbi_image_free(pixel_data);
+    image.width = width;
+    image.height = height;
+    image.xoffset = 0;
+    image.format = ZPixmap;
+    image.data = reinterpret_cast<char*>(pixel_data);
+    image.byte_order = LSBFirst;
+    image.bitmap_unit = bytes_per_pixel;
+    image.bitmap_bit_order = LSBFirst;
+    image.bitmap_pad = bitmap_pad;
+    image.depth = depth;
+    image.bytes_per_line = 0;
+    image.bits_per_pixel = depth;
+    image.red_mask = 0x0000FF;
+    image.green_mask = 0x00FF00;
+    image.blue_mask = 0xFF0000;
+    image.obdata = nullptr;
+    Status status = XInitImage(&image);
+    stbi_image_free(pixel_data);
+    if (!status) {
         return false;
     }
 
     Pixmap pixmap = XCreatePixmap(display, DefaultRootWindow(display),
                                   width, height, depth);
     GC graphics_context = XCreateGC(display, pixmap, 0, nullptr);
-    XPutImage(display, pixmap, graphics_context, image,
+    XPutImage(display, pixmap, graphics_context, &image,
               0, 0, 0, 0, width, height);
     XFreeGC(display, graphics_context);
-
-    // XDestroyImage actually deallocates not only the image but the pixel_data
-    // memory passed into XCreateImage, so there's no need to call
-    // stbi_image_free(pixel_data) and doing so would be "freeing freed
-    // memory".
-    XDestroyImage(image);
 
     *out_pixmap = pixmap;
     return true;
@@ -150,7 +188,7 @@ static void unload_pixmap(Display* display, Pixmap pixmap) {
 }
 
 static void set_icons(Display* display, Window window, Atom net_wm_icon,
-                      Atom cardinal, Image* icons, int icon_count) {
+                      Atom cardinal, Icon* icons, int icon_count) {
 
     int total_longs = 0;
     for (int i = 0; i < icon_count; ++i) {
@@ -162,8 +200,8 @@ static void set_icons(Display* display, Window window, Atom net_wm_icon,
     // Repeat this for every icon; the order is unimportant.
 
     unsigned long* icon_buffer;
-    std::size_t total_size = sizeof(unsigned long) * total_longs;
-    icon_buffer = static_cast<unsigned long*>(std::malloc(total_size));
+    size_t total_size = sizeof(unsigned long) * total_longs;
+    icon_buffer = ALLOCATE(unsigned long, total_size);
     unsigned long* buffer = icon_buffer;
     for (int i = 0; i < icon_count; ++i) {
         *buffer++ = icons[i].width;
@@ -181,7 +219,7 @@ static void set_icons(Display* display, Window window, Atom net_wm_icon,
                     reinterpret_cast<const unsigned char*>(icon_buffer),
                     total_longs);
 
-    std::free(icon_buffer);
+    DEALLOCATE(icon_buffer);
 }
 
 struct Mesh {
@@ -239,6 +277,9 @@ static int handle_x_error(Display* display, XErrorEvent* event) {
 }
 
 int main(int argc, char** argv) {
+    static_cast<void>(argc);
+    static_cast<void>(argv);
+
     const int canvas_width = 480;
     const int canvas_height = 270;
     const int pixel_scale = 3;
@@ -283,12 +324,28 @@ int main(int argc, char** argv) {
     Clock clock;
     Canvas canvas;
 
+    // Logging has to be enabled before anything else so it can log any setup
+    // errors as the occur.
+    logging::startup();
+
+    // Set the size limitations for core files. This also implicitly enables
+    // core files to be output in the event of a crash, if user settings aren't
+    // already set to allow that.
+
+    rlimit core_limits;
+    core_limits.rlim_cur = core_limits.rlim_max = KIBIBYTES(64);
+    setrlimit(RLIMIT_CORE, &core_limits);
+
+    // Set handlers to log crashes and unexpected errors.
+
     if (!register_posix_signal_handlers()) {
         LOG_ERROR("Was not able to set the POSIX signal handlers.");
         return EXIT_FAILURE;
     }
 
     XSetErrorHandler(handle_x_error);
+
+    PROFILE_THREAD_ENTER();
 
     // Connect to the X server
     display = XOpenDisplay(nullptr);
@@ -330,9 +387,9 @@ int main(int argc, char** argv) {
                                visual->visual, AllocNone);
     XSetWindowAttributes window_attributes = {};
     window_attributes.colormap = colormap;
-    window_attributes.event_mask = KeyPressMask | KeyReleaseMask |
-                                   ButtonPressMask | ButtonReleaseMask |
-                                   PointerMotionMask;
+    window_attributes.event_mask = KeyPressMask | KeyReleaseMask
+                                 | ButtonPressMask | ButtonReleaseMask
+                                 | PointerMotionMask;
     window = XCreateWindow(display, DefaultRootWindow(display),
                            0, 0, scaled_width, scaled_height, 0, visual->depth,
                            InputOutput, visual->visual,
@@ -401,14 +458,10 @@ int main(int argc, char** argv) {
     // in icons.
     net_wm_icon = XInternAtom(display, "_NET_WM_ICON", False);
     cardinal = XInternAtom(display, "CARDINAL", False);
-    Image icons[ARRAY_COUNT(icon_names)];
-    FOR_N(i, ARRAY_COUNT(icons)) {
-        load_image(icons + i, icon_names[i]);
-    }
+    Icon icons[ARRAY_COUNT(icon_names)];
+    load_icons(icons, icon_names, ARRAY_COUNT(icon_names));
     set_icons(display, window, net_wm_icon, cardinal, icons, ARRAY_COUNT(icons));
-    FOR_N(i, ARRAY_COUNT(icons)) {
-        unload_image(icons + i);
-    }
+    unload_icons(icons, ARRAY_COUNT(icons));
 
     // Make the window visible.
     XMapWindow(display, window);
@@ -477,9 +530,9 @@ int main(int argc, char** argv) {
     // shader uniform setup for samplers
     {
         canvas_shader = load_shader_program(nullptr, nullptr);
-        pass1_shader = load_shader_program(nullptr, "Assets/Shaders/yiq.fs");
-        pass2_shader = load_shader_program(nullptr, "Assets/Shaders/composite.fs");
-        pass3_shader = load_shader_program(nullptr, "Assets/Shaders/fringing.fs");
+        pass1_shader = load_shader_program(nullptr, "yiq.fs");
+        pass2_shader = load_shader_program(nullptr, "composite.fs");
+        pass3_shader = load_shader_program(nullptr, "fringing.fs");
 
         glUseProgram(canvas_shader);
         glUniform1i(glGetUniformLocation(canvas_shader, "texture"), 0);
@@ -500,9 +553,9 @@ int main(int argc, char** argv) {
         glGenTextures(1, &ntsc_dot_crawl);
         glBindTexture(GL_TEXTURE_2D, ntsc_dot_crawl);
         float data[3 * 9] = {
-            1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 1.0f, 0.0f,
-            0.0f, 1.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,
-            0.0f, 0.0f, 1.0f,  0.0f, 1.0f, 0.0f,  1.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,  0.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f,
+            1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f,  0.0f, 0.0f, 1.0f,
         };
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 3, 3, 0, GL_RGB, GL_FLOAT, data);
     }
@@ -533,7 +586,6 @@ int main(int argc, char** argv) {
     }
 
     // Initialise any other resources needed before the main loop starts.
-    monitoring::startup();
     input::startup();
     audio::startup();
     game::startup();
@@ -564,9 +616,9 @@ int main(int argc, char** argv) {
         // Record when the frame starts.
         double frame_start_time = get_time(&clock);
 
-        BEGIN_MONITORING(rendering);
-
         // Push the last frame as soon as possible.
+
+        PROFILE_BEGIN_NAMED("main/loop/render");
 
         const float identity_matrix[16] = {
             1.0f, 0.0f, 0.0f, 0.0f,
@@ -656,11 +708,13 @@ int main(int argc, char** argv) {
             }
         }
 
+        PROFILE_END();
+
+        PROFILE_BEGIN_NAMED("main/loop/swap buffers");
+
         glXSwapBuffers(display, window);
 
-        END_MONITORING(rendering);
-
-        BEGIN_MONITORING(drawing);
+        PROFILE_END();
 
         if (fps.total_time >= 1.0) {
             game::update_fps(fps.frame_count);
@@ -670,14 +724,9 @@ int main(int argc, char** argv) {
 
         game::update_and_draw(&canvas);
 
-        // Since the monitoring data has been reported or ignored at this
-        // point, tell the monitoring system to go ahead and move to the next
-        // time slice.
-        monitoring::complete_frame();
-
-        END_MONITORING(drawing);
-
         input::poll();
+
+        PROFILE_BEGIN_NAMED("main/loop/X11 events");
 
         // Flush the events queue and respond to any pertinent events.
         while (XPending(display) > 0) {
@@ -743,14 +792,22 @@ int main(int argc, char** argv) {
             }
         }
 
+        PROFILE_END();
+
+        profile::reset_all();
+
         // If the swap-buffer call isn't set to wait for the vertical retrace,
-        // the remaining time needs to be waited off here until the next frame.
+        // the remaining time needs to be waited off here until the next frame
 
         if (!vertical_synchronization) {
+            PROFILE_BEGIN_NAMED("main/loop/sleep");
+
             double frame_thusfar = get_time(&clock) - frame_start_time;
             if (frame_thusfar < frame_frequency) {
                 go_to_sleep(&clock, frame_frequency - frame_thusfar);
             }
+
+            PROFILE_END();
         }
 
         // Update the frames_per_second counter.
@@ -770,7 +827,6 @@ int main(int argc, char** argv) {
     game::shutdown();
     audio::shutdown();
     input::shutdown();
-    monitoring::shutdown();
 
     // Free and destroy any system resources.
     canvas_destroy(&canvas);
@@ -792,8 +848,14 @@ int main(int argc, char** argv) {
     XFreeColormap(display, colormap);
     XCloseDisplay(display);
 
+    PROFILE_THREAD_EXIT();
+
+    profile::cleanup();
+
     LOG_DEBUG("total heap allocated bytes after shutdown: %lu",
               get_heap_allocated_total());
+
+    logging::shutdown();
 
     return 0;
 }
