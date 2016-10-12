@@ -1,6 +1,7 @@
 #include "posix_errors.h"
 
 #include "logging.h"
+#include "asset_handling.h"
 
 #include <signal.h>
 #include <execinfo.h>
@@ -27,17 +28,16 @@ using std::snprintf;
 #define TRAP_HWBKPT (TRAP_BRKPT + 3)
 #endif
 
-#define MAX_STACK_FRAMES 64
-
 namespace {
-    void* stack_traces[MAX_STACK_FRAMES];
+    const int max_stack_frames = 64;
+    void* stack_traces[max_stack_frames];
     char signal_handler_stack[SIGSTKSZ];
 }
 
 static void log_stack_trace() {
     LOG_ERROR("stack trace:");
 
-    int trace_size = backtrace(stack_traces, MAX_STACK_FRAMES);
+    int trace_size = backtrace(stack_traces, max_stack_frames);
     char** messages = backtrace_symbols(stack_traces, trace_size);
     if (!messages) {
         return;
@@ -62,7 +62,8 @@ static void log_stack_trace() {
             }
         }
 
-        if (mangled_name && begin_offset && end_offset && mangled_name < begin_offset) {
+        if (mangled_name && begin_offset &&
+            end_offset && mangled_name < begin_offset) {
             // Terminate the strings before doing anything with them.
             *mangled_name++ = '\0';
             *begin_offset++ = '\0';
@@ -71,11 +72,14 @@ static void log_stack_trace() {
             // De-mangle the function name.
 
             int status;
-            char* demangled_name = abi::__cxa_demangle(mangled_name, nullptr, nullptr, &status);
+            char* demangled_name = abi::__cxa_demangle(mangled_name, nullptr,
+                                                       nullptr, &status);
             if (status == 0) {
-                LOG_ERROR("  %s: %s+%s", messages[i], demangled_name, begin_offset);
+                LOG_ERROR("  %s: %s+%s", messages[i], demangled_name,
+                          begin_offset);
             } else {
-                LOG_ERROR("  %s: %s+%s", messages[i], mangled_name, begin_offset);
+                LOG_ERROR("  %s: %s+%s", messages[i], mangled_name,
+                          begin_offset);
             }
             if (demangled_name) {
                 free(demangled_name);
@@ -148,8 +152,62 @@ static const char* describe_trap(int code) {
     }
 }
 
-#define MESSAGE_MAX 128
-#define COMMAND_MAX 256
+static void describe_error(char* message, int message_max,
+                           int signal, siginfo_t* info, void* context) {
+    switch (signal) {
+        case SIGABRT: {
+            snprintf(message, message_max, "The process was told to abort.");
+            break;
+        }
+        case SIGBUS: {
+            snprintf(message, message_max, "Access to an undefined portion of "
+                     "a memory object at address %p occurred. %s",
+                     info->si_addr, describe_bus_error(info->si_code));
+            break;
+        }
+        case SIGILL: {
+            snprintf(message, message_max, "An illegal instruction was given "
+                     "at address %p. %s", info->si_addr,
+                     describe_illegal_instruction(info->si_code));
+            break;
+        }
+        case SIGFPE: {
+            snprintf(message, message_max, "An arithmetic exception occurred "
+                     "at address %p. %s", info->si_addr,
+                     describe_arithmetic_exception(info->si_code));
+            break;
+        }
+        case SIGSEGV: {
+            snprintf(message, message_max, "A segmentation fault occurred at "
+                     "memory address %p. %s", info->si_addr,
+                     describe_segmentation_fault(info->si_code));
+            break;
+        }
+        case SIGTRAP: {
+            snprintf(message, message_max, "A trap instruction was "
+                     "encountered at memory address %p. %s", info->si_addr,
+                     describe_trap(info->si_code));
+            break;
+        }
+    }
+}
+
+static void handle_pre_logging_posix_signal(int signal, siginfo_t* info,
+                                            void* context) {
+    static_cast<void>(context);
+
+    // @Incomplete: see "asynchronous signal handler unsafe" comment in
+    // handle_posix_signal
+
+    const int message_max = 128;
+    char message[message_max];
+    describe_error(message, message_max, signal, info, context);
+    report_error_in_a_popup(message, false);
+
+    if (signal == SIGTRAP) {
+        raise(signal);
+    }
+}
 
 static void handle_posix_signal(int signal, siginfo_t* info, void* context) {
     static_cast<void>(context);
@@ -163,45 +221,51 @@ static void handle_posix_signal(int signal, siginfo_t* info, void* context) {
     // it could possibly cause errors if this function is being entered by two
     // separate signals at the same time.
 
-    char message[MESSAGE_MAX];
-    switch (signal) {
-        case SIGABRT: {
-            snprintf(message, MESSAGE_MAX, "The process was told to abort.");
-            break;
-        }
-        case SIGBUS: {
-            snprintf(message, MESSAGE_MAX,"Access to an undefined portion of a memory object at address %p occurred. %s", info->si_addr, describe_bus_error(info->si_code));
-            break;
-        }
-        case SIGILL: {
-            snprintf(message, MESSAGE_MAX, "An illegal instruction was given at address %p. %s", info->si_addr, describe_illegal_instruction(info->si_code));
-            break;
-        }
-        case SIGFPE: {
-            snprintf(message, MESSAGE_MAX, "An arithmetic exception occurred at address %p. %s", info->si_addr, describe_arithmetic_exception(info->si_code));
-            break;
-        }
-        case SIGSEGV: {
-            snprintf(message, MESSAGE_MAX, "A segmentation fault occurred at memory address %p. %s", info->si_addr, describe_segmentation_fault(info->si_code));
-            break;
-        }
-        case SIGTRAP: {
-            snprintf(message, MESSAGE_MAX, "A trap instruction was encountered at memory address %p. %s", info->si_addr, describe_trap(info->si_code));
-            break;
-        }
-    }
+    const int message_max = 128;
+    char message[message_max];
+    describe_error(message, message_max, signal, info, context);
     LOG_ERROR("%s", message);
 
     log_stack_trace();
 
-    char command[COMMAND_MAX];
-    snprintf(command, COMMAND_MAX, "zenity --error --text=\"mandible encountered an error it was not able to recover from.\n\n%s\n\nCheck the log for more specifics.\"", message);
-    int result = system(command);
-    static_cast<void>(result);
+    report_error_in_a_popup(message);
 
     if (signal == SIGTRAP) {
         raise(signal);
     }
+}
+
+namespace {
+    const int num_signals = 6;
+    const int signals[num_signals] = {
+        SIGABRT,
+        SIGBUS,
+        SIGFPE,
+        SIGILL,
+        SIGSEGV,
+        SIGTRAP,
+    };
+}
+
+bool set_posix_signal_handler_stack() {
+    stack_t stack = {};
+    stack.ss_sp = static_cast<void*>(signal_handler_stack);
+    stack.ss_size = SIGSTKSZ;
+    stack.ss_flags = 0;
+    return sigaltstack(&stack, nullptr) == 0;
+}
+
+bool register_initial_posix_signal_handlers() {
+    struct sigaction action = {};
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+    sigemptyset(&action.sa_mask);
+    action.sa_sigaction = handle_pre_logging_posix_signal;
+    for (int i = 0; i < num_signals; ++i) {
+        if (sigaction(signals[i], &action, nullptr) == -1) {
+            return false;
+        }
+    }
+    return true;
 }
 
 const char* describe_signal(int signal) {
@@ -217,39 +281,16 @@ const char* describe_signal(int signal) {
 }
 
 bool register_posix_signal_handlers() {
-    // Set the alternate stack to be used by the POSIX signal handlers.
-    {
-        stack_t stack = {};
-        stack.ss_sp = static_cast<void*>(signal_handler_stack);
-        stack.ss_size = SIGSTKSZ;
-        stack.ss_flags = 0;
-        if (sigaltstack(&stack, nullptr) != 0) {
-            LOG_ERROR("Couldn't set the stack.");
+    struct sigaction action = {};
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+    sigemptyset(&action.sa_mask);
+    action.sa_sigaction = handle_posix_signal;
+    for (int i = 0; i < num_signals; ++i) {
+        if (sigaction(signals[i], &action, nullptr) == -1) {
+            LOG_ERROR("Could not set the signal action to handle signals of "
+                      "type %s.", describe_signal(signals[i]));
             return false;
         }
     }
-
-    // Register the POSIX signal handlers.
-    {
-        struct sigaction action = {};
-        action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
-        sigemptyset(&action.sa_mask);
-        action.sa_sigaction = handle_posix_signal;
-        int signals[6] = {
-            SIGABRT,
-            SIGBUS,
-            SIGFPE,
-            SIGILL,
-            SIGSEGV,
-            SIGTRAP,
-        };
-        for (int i = 0; i < 6; ++i) {
-            if (sigaction(signals[i], &action, nullptr) == -1) {
-                LOG_ERROR("Could not set the signal action to handle signals of type %s.", describe_signal(signals[i]));
-                return false;
-            }
-        }
-    }
-
     return true;
 }

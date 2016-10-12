@@ -9,6 +9,7 @@ set (INCLUDES
     atomic.h
     audio.h
     byte_buffer.h
+    cellular_automata.h
     draw.h
     evdev_text.h
     font.h
@@ -19,9 +20,11 @@ set (INCLUDES
     input.h
     logging.h
     memory.h
+    perlin_noise.h
     posix_errors.h
     profile.h
     random.h
+    simplex_noise.h
     sized_types.h
     sorting.h
     stb_image.h
@@ -35,10 +38,12 @@ source_group ("Header Files" FILES ${INCLUDES})
 # ----- SOURCE FILES -----
 set (SOURCES
     ani_file.cpp
+    assert.cpp
     asset_handling.cpp
     atomic.cpp
     audio.cpp
     byte_buffer.cpp
+    cellular_automata.cpp
     draw.cpp
     evdev_text.cpp
     font.cpp
@@ -50,9 +55,11 @@ set (SOURCES
     logging.cpp
     main.cpp
     memory.cpp
+    perlin_noise.cpp
     posix_errors.cpp
     profile.cpp
     random.cpp
+    simplex_noise.cpp
     string_utilities.cpp
     unicode.cpp
     wave_decoder.cpp

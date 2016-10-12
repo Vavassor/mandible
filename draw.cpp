@@ -1,7 +1,6 @@
 #include "draw.h"
 
 #include "unicode.h"
-#include "memory.h"
 #include "string_utilities.h"
 #include "assert.h"
 
@@ -28,7 +27,7 @@ const u32 distinct_colour_table[64] = {
 static void fill32(void* array, u32 value, int count) {
     u32* pointer = static_cast<u32*>(array);
     for (int i = 0; i < count; ++i) {
-        pointer[i] = count;
+        pointer[i] = value;
     }
 }
 
@@ -81,8 +80,8 @@ static int mod(int x, int m) {
     return (x % m + m) % m;
 }
 
-void draw_subimage(Canvas* canvas, Atlas* atlas, int cx, int cy,
-                   int tx, int ty, int width, int height) {
+void draw_image(Canvas* canvas, Atlas* atlas, int cx, int cy,
+                int tx, int ty, int width, int height) {
     if (cx < 0) {
         tx -= cx;
         width += cx;
@@ -122,7 +121,8 @@ void draw_subimage(Canvas* canvas, Atlas* atlas, int cx, int cy,
     }
 }
 
-static void clip_to_bounds(int* position, int* length, int clip_min, int clip_max) {
+static void clip_to_bounds(int* position, int* length,
+                           int clip_min, int clip_max) {
     int x = *position;
     int d = *length;
     if (x < clip_min) {
@@ -137,6 +137,20 @@ static void clip_to_bounds(int* position, int* length, int clip_min, int clip_ma
     }
     *position = x;
     *length = d;
+}
+
+void draw_canvas(Canvas* to, Canvas* from, int cx, int cy) {
+    // @Incomplete: Test this clipping more thoroughly.
+    clip_to_bounds(&cx, &from->width, 0, to->width);
+    clip_to_bounds(&cy, &from->height, 0, to->height);
+    for (int y = 0; y < from->height; ++y) {
+        for (int x = 0; x < from->width; ++x) {
+            int atlas_x = mod(x, from->width);
+            int atlas_y = mod(y, from->height);
+            int ai = atlas_y * from->width + atlas_x;
+            set_pixel(to, cx + x, cy + y, from->pixels[ai]);
+        }
+    }
 }
 
 void draw_rectangle(Canvas* canvas, int cx, int cy, int width, int height,
@@ -300,6 +314,22 @@ void draw_line(Canvas* canvas, int x1, int y1, int x2, int y2, u32 colour) {
     }
 }
 
+void draw_circle(Canvas* canvas, int cx, int cy, int radius, u32 colour) {
+    // @Incomplete: This doesn't handle overflow case when cx or cy is near
+    // the canvas bounds.
+    int x_min = cx - radius >= 0             ? -radius : -cx;
+    int x_max = cx + radius < canvas->width  ?  radius : canvas->width - cx - 1;
+    int y_min = cy - radius >= 0             ? -radius : -cy;
+    int y_max = cy + radius < canvas->height ?  radius : canvas->height - cy - 1;
+    for (int y = y_min; y <= y_max; ++y) {
+        for (int x = x_min; x <= x_max; ++x) {
+            if ((x * x) + (y * y) <= (radius * radius) + 1) {
+                set_pixel(canvas, cx + x, cy + y, colour);
+            }
+        }
+    }
+}
+
 static void hue_shift_matrix(double matrix[3][3], double h) {
     double u = cos(h);
     double w = sin(h);
@@ -396,13 +426,15 @@ static bool is_line_break(char32_t codepoint) {
 }
 
 void draw_text(Canvas* canvas, Atlas* atlas, BmFont* font, const char* text,
-               int cx, int cy) {
+               int cx, int cy, Stack* stack) {
 
     int char_count = string_size(text);
     int codepoint_count = utf8_codepoint_count(text);
-    char32_t* codepoints = ALLOCATE(char32_t, codepoint_count);
-    utf8_to_utf32(text, char_count, codepoints, codepoint_count);
-    DEALLOCATE(codepoints);
+    char32_t* codepoints;
+    {
+        SCOPED_ALLOCATE(stack, &codepoints, char32_t, codepoint_count);
+        utf8_to_utf32(text, char_count, codepoints, codepoint_count);
+    }
 
     struct { int x, y; } pen;
     pen.x = cx;
@@ -428,7 +460,7 @@ void draw_text(Canvas* canvas, Atlas* atlas, BmFont* font, const char* text,
                 int ty = glyph->texcoord.top;
                 int tw = glyph->texcoord.width;
                 int th = glyph->texcoord.height;
-                draw_subimage(canvas, atlas, x, y, tx, ty, tw, th);
+                draw_image(canvas, atlas, x, y, tx, ty, tw, th);
                 pen.x += font->tracking + glyph->x_advance;
             }
         }
@@ -436,3 +468,19 @@ void draw_text(Canvas* canvas, Atlas* atlas, BmFont* font, const char* text,
         prior_char = c;
     }
 }
+
+void draw_cellular_automaton(Canvas* canvas, ca::Grid* grid, int x, int y) {
+    int ti = grid->table_index;
+    for (int i = 0; i < grid->columns; ++i) {
+        for (int j = 0; j < grid->rows; ++j) {
+#if 1
+            u8 c = (256 / grid->states) * grid->cells[ti][i][j];
+            u32 colour = PACK_RGBA(c, c, c, 0xFF);
+#else
+            u32 colour = distinct_colour_table[12 + grid->cells[ti][i][j]];
+#endif
+            set_pixel(canvas, x + i, y + j, colour);
+        }
+    }
+}
+

@@ -1,24 +1,15 @@
 #include "profile.h"
 
 #include "sorting.h"
+#include "logging.h"
 #include "memory.h"
 #include "assert.h"
 
-#include <cstdio>
-
 using std::size_t;
-using std::printf;
 
 #if defined(__linux__)
 
 #include <time.h>
-
-static void yield() {
-    timespec duration;
-    duration.tv_sec = 0;
-    duration.tv_nsec = 1000;
-    clock_nanosleep(CLOCK_MONOTONIC, 0, &duration, nullptr);
-}
 
 static u64 get_timestamp_from_system() {
     timespec now;
@@ -29,10 +20,6 @@ static u64 get_timestamp_from_system() {
 #elif defined(_WIN32)
 
 #include <Windows.h>
-
-static void yield() {
-    Sleep(0);
-}
 
 static u64 get_timestamp_from_system() {
     LARGE_INTEGER now;
@@ -52,22 +39,28 @@ static bool atomic_compare_exchange(volatile u32* p, u32 expected, u32 desired) 
 }
 
 static u64 get_timestamp() {
-#if defined(__i386__)
+    #if defined(__i386__)
     u64 x;
     asm volatile ("rdtsc" : "=A" (x));
     return x;
-#elif defined(__amd64__)
+    #elif defined(__amd64__)
     u64 a, d;
     asm volatile ("rdtsc" : "=a" (a), "=d" (d));
     return (d << 32) | a;
-#elif defined(__arm__)
+    #elif defined(__arm__)
     // ARMv6 has no performance counter and ARMv7-A and ARMv8-A can only access
     // their "Performance Monitor Unit" if the kernel enables user-space to
     // access it. So, it's too inconvenient to get at; Instead, just fall back
     // to the system call.
     return get_timestamp_from_system();
-#endif
+    #endif
 }
+
+#if defined(__i386__) || defined(__amd64__)
+#define YIELD() asm volatile ("pause")
+#elif defined(__arm__)
+#define YIELD() asm volatile ("yield")
+#endif
 
 #elif defined(_MSC_VER)
 
@@ -80,12 +73,18 @@ static bool atomic_compare_exchange(volatile u32* p, u32 expected, u32 desired) 
 }
 
 static u64 get_timestamp() {
-#if defined(_M_IX86) || defined(_M_X64)
+    #if defined(_M_IX86) || defined(_M_X64)
     return __rdtsc();
-#elif defined(_M_ARM)
+    #elif defined(_M_ARM)
     return get_timestamp_from_system();
-#endif
+    #endif
 }
+
+#if defined(_M_IX86) || defined(_M_X64)
+#define YIELD() _mm_pause()
+#elif defined(_M_ARM)
+#define YIELD() __yield()
+#endif
 
 #endif // defined(__GNUC__)
 
@@ -113,19 +112,20 @@ struct ThreadState {
     SpinLock thread_lock;
     bool require_thread_lock;
     Caller* active_caller;
+    Heap* heap;
 };
 
 // SpinLock....................................................................
 
 void spin_lock_acquire(SpinLock* lock) {
     while (!atomic_compare_exchange(lock, 0, 1)) {
-        yield();
+        YIELD();
     }
 }
 
 void spin_lock_release(SpinLock* lock) {
     while (!atomic_compare_exchange(lock, 1, 0)) {
-        yield();
+        YIELD();
     }
 }
 
@@ -165,40 +165,40 @@ static u32 next_power_of_two(u32 x) {
     return x + 1;
 }
 
-static void resize(Caller* parent, u32 new_size) {
+static void resize(Heap* heap, Caller* parent, u32 new_size) {
     if (new_size < parent->bucket_count) {
         new_size = 2 * parent->bucket_count;
     } else {
         new_size = next_power_of_two(new_size - 1);
     }
-    Caller** new_buckets = ALLOCATE(Caller*, new_size);
+    Caller** new_buckets = ALLOCATE(heap, Caller*, new_size);
     for (u32 i = 0; i < parent->bucket_count; ++i) {
         if (parent->buckets[i]) {
             *find_empty_child_slot(new_buckets, new_size, parent->buckets[i]->name) = parent->buckets[i];
         }
     }
-    DEALLOCATE(parent->buckets);
+    DEALLOCATE(heap, parent->buckets);
     parent->buckets = new_buckets;
     parent->bucket_count = new_size;
 }
 
-static void caller_create(Caller* caller, Caller* parent, const char* name) {
+static void caller_create(Heap* heap, Caller* caller, Caller* parent, const char* name) {
     caller->name = name;
     caller->parent = parent;
-    resize(caller, 2); // initialises the tree hash table
+    resize(heap, caller, 2); // initialises the tree hash table
 }
 
-static void caller_destroy(Caller* caller) {
+static void caller_destroy(Heap* heap, Caller* caller) {
     for (u32 i = 0; i < caller->bucket_count; ++i) {
         if (caller->buckets[i]) {
-            caller_destroy(caller->buckets[i]);
-            DEALLOCATE(caller->buckets[i]);
+            caller_destroy(heap, caller->buckets[i]);
+            DEALLOCATE(heap, caller->buckets[i]);
         }
     }
-    DEALLOCATE(caller->buckets);
+    DEALLOCATE(heap, caller->buckets);
 }
 
-static Caller* find_or_create(Caller* parent, const char* name) {
+static Caller* find_or_create(Heap* heap, Caller* parent, const char* name) {
     u32 index = hash_pointer(name, parent->bucket_count);
     u32 mask = parent->bucket_count - 1;
     for (Caller* caller = parent->buckets[index]; caller; caller = parent->buckets[index & mask]) {
@@ -212,12 +212,12 @@ static Caller* find_or_create(Caller* parent, const char* name) {
 
     parent->child_count += 1;
     if (parent->child_count >= parent->bucket_count / 2) {
-        resize(parent, parent->child_count);
+        resize(heap, parent, parent->child_count);
     }
 
     Caller** slot = find_empty_child_slot(parent->buckets, parent->bucket_count, name);
-    Caller* temp = ALLOCATE(Caller, 1);
-    caller_create(temp, parent, name);
+    Caller* temp = ALLOCATE(heap, Caller, 1);
+    caller_create(heap, temp, parent, name);
     *slot = temp;
 
     unlock_this_thread();
@@ -226,13 +226,17 @@ static Caller* find_or_create(Caller* parent, const char* name) {
 }
 
 static double average(int sum, int count) {
-    return (count)? static_cast<double>(sum) / static_cast<double>(count) : 0;
+    if (count) {
+        return static_cast<double>(sum) / static_cast<double>(count);
+    } else {
+        return 0;
+    }
 }
 
-#define PRINT_BUFFER_MAX 64
+static const int print_buffer_max = 64;
 
-static void caller_print(Caller* caller, char* format_buffer, u64 total_duration, int indent = 0, bool is_last = false) {
-    ASSERT(indent + 3 <= PRINT_BUFFER_MAX);
+static void caller_print(Heap* heap, Caller* caller, char* format_buffer, u64 total_duration, int indent = 0, bool is_last = false) {
+    ASSERT(indent + 3 <= print_buffer_max);
 
     struct {
         Caller** callers;
@@ -242,7 +246,7 @@ static void caller_print(Caller* caller, char* format_buffer, u64 total_duration
     children.count = 0;
 
     if (caller->child_count) {
-        children.callers = ALLOCATE(Caller*, caller->child_count);
+        children.callers = ALLOCATE(heap, Caller*, caller->child_count);
         children.capacity = caller->child_count;
         for (u32 i = 0; i < caller->bucket_count; ++i) {
             if (caller->buckets[i] && caller->buckets[i]->ticks != 0) {
@@ -254,10 +258,10 @@ static void caller_print(Caller* caller, char* format_buffer, u64 total_duration
 
     char* format = &format_buffer[indent];
     if (indent) {
-        format[-2] = (is_last)? ' ' : '|';
-        format[-1] = (is_last)? '\\' : ' ';
+        format[-2] = is_last ? ' ' : '|';
+        format[-1] = is_last ? '\\' : ' ';
     }
-    format[0] = (children.count)? '+' : '-';
+    format[0] = children.count ? '+' : '-';
     format[1] = '-';
     format[2] = '\0';
 
@@ -265,25 +269,24 @@ static void caller_print(Caller* caller, char* format_buffer, u64 total_duration
     int calls = caller->calls;
     double ms = static_cast<double>(ticks) / 1000000.0;
     double percent = average(ticks * 100, total_duration);
-    printf("%s %.2f mcycles, %d calls, %.0f cycles avg, %.2f%%: %s\n",
-           format_buffer, ms, calls, average(ticks, calls), percent, caller->name);
+    LOG_DEBUG("%s %.2f mcycles, %d calls, %.0f cycles avg, %.2f%%: %s\n", format_buffer, ms, calls, average(ticks, calls), percent, caller->name);
 
     if (indent && is_last) {
         format[-2] = ' ';
         format[-1] = ' ';
     }
     if (children.count) {
-        Caller** merge_buffer = ALLOCATE(Caller*, children.count);
+        Caller** merge_buffer = ALLOCATE(heap, Caller*, children.count);
         auto compare = [](const Caller* a, const Caller* b) -> bool {
             return a->ticks > b->ticks;
         };
         merge_sort(children.callers, merge_buffer, 0, children.count, compare);
         for (u32 i = 0; i < children.count - 1; ++i) {
-            caller_print(children.callers[i], format_buffer, total_duration, indent + 2, false);
+            caller_print(heap, children.callers[i], format_buffer, total_duration, indent + 2, false);
         }
-        caller_print(children.callers[children.count - 1], format_buffer, total_duration, indent + 2, true);
-        DEALLOCATE(merge_buffer);
-        DEALLOCATE(children.callers);
+        caller_print(heap, children.callers[children.count - 1], format_buffer, total_duration, indent + 2, true);
+        DEALLOCATE(heap, merge_buffer);
+        DEALLOCATE(heap, children.callers);
     }
 }
 
@@ -325,14 +328,14 @@ static void caller_unpause(Caller* caller, u64 unpause_time) {
     caller->paused = false;
 }
 
-static void merge_caller_tree(Caller* to, Caller* from) {
-    Caller* child = find_or_create(to, from->name);
+static void merge_caller_tree(Heap* heap, Caller* to, Caller* from) {
+    Caller* child = find_or_create(heap, to, from->name);
     child->ticks += from->ticks;
     child->calls += from->calls;
     child->parent = from->parent;
     for (u32 i = 0; i < from->bucket_count; ++i) {
         if (from->buckets[i] && from->buckets[i]->ticks != 0) {
-            merge_caller_tree(child, from->buckets[i]);
+            merge_caller_tree(heap, child, from->buckets[i]);
         }
     }
 }
@@ -344,10 +347,10 @@ struct Root {
     ThreadState* thread_state;
 };
 
-#define MAX_THREAD_ROOTS 8
+static const int thread_roots_max = 8;
 
 struct GlobalThreadsList {
-    Root roots[MAX_THREAD_ROOTS];
+    Root roots[thread_roots_max];
     int roots_count;
     SpinLock lock;
 };
@@ -382,7 +385,7 @@ static void release_global_lock() {
 static Caller* add_root(ThreadState* state) {
     Root* out = threads_list.roots + threads_list.roots_count;
     threads_list.roots_count += 1;
-    ASSERT(threads_list.roots_count < MAX_THREAD_ROOTS);
+    ASSERT(threads_list.roots_count < thread_roots_max);
     out->thread_state = state;
     return &out->caller;
 }
@@ -394,7 +397,7 @@ void begin_period(const char* name) {
     if (!parent) {
         return;
     }
-    Caller* active = find_or_create(parent, name);
+    Caller* active = find_or_create(thread_state.heap, parent, name);
     start_timing(active);
     thread_state.active_caller = active;
 }
@@ -422,11 +425,11 @@ void unpause_period() {
     }
 }
 
-void enter_thread(const char* name) {
+void enter_thread(Heap* heap, const char* name) {
     acquire_global_lock();
 
     Caller* temp = add_root(&thread_state);
-    caller_create(temp, nullptr, name);
+    caller_create(heap, temp, nullptr, name);
 
     lock_this_thread();
 
@@ -434,6 +437,7 @@ void enter_thread(const char* name) {
     start_timing(temp);
     temp->active = true;
     root = temp;
+    thread_state.heap = heap;
 
     unlock_this_thread();
 
@@ -454,12 +458,12 @@ void exit_thread() {
     release_global_lock();
 }
 
-void dump_print() {
-    Caller* packer = ALLOCATE(Caller, 1);
-    caller_create(packer, nullptr, "/Thread Packer");
+void dump_print(Heap* heap) {
+    Caller* packer = ALLOCATE(heap, Caller, 1);
+    caller_create(heap, packer, nullptr, "/Thread Packer");
 
     struct {
-        Caller* callers[MAX_THREAD_ROOTS];
+        Caller* callers[thread_roots_max];
         int callers_count;
     } packed_threads;
     packed_threads.callers_count = 0;
@@ -481,14 +485,14 @@ void dump_print() {
         }
 
         // Merge the thread into the packer object, which will result in 1 caller per thread name, not 1 caller per thread instance.
-        merge_caller_tree(packer, &thread->caller);
-        Caller* child = find_or_create(packer, thread->caller.name);
+        merge_caller_tree(heap, packer, &thread->caller);
+        Caller* child = find_or_create(heap, packer, thread->caller.name);
 
         // Add the child to the list of threads to dump (use the active flag to indicate if it's been added).
         if (!child->active) {
             packed_threads.callers[packed_threads.callers_count] = child;
             packed_threads.callers_count += 1;
-            ASSERT(packed_threads.callers_count <= MAX_THREAD_ROOTS);
+            ASSERT(packed_threads.callers_count <= thread_roots_max);
             child->active = true;
         }
 
@@ -500,15 +504,15 @@ void dump_print() {
 
     release_global_lock();
 
-    char format_buffer[PRINT_BUFFER_MAX];
+    char format_buffer[print_buffer_max];
     for (int i = 0; i < packed_threads.callers_count; ++i) {
         Caller* caller = packed_threads.callers[i];
-        caller_print(caller, format_buffer, caller->ticks);
+        caller_print(heap, caller, format_buffer, caller->ticks);
     }
-    printf("\n");
+    LOG_DEBUG("\n");
 
-    caller_destroy(packer);
-    DEALLOCATE(packer);
+    caller_destroy(heap, packer);
+    DEALLOCATE(heap, packer);
 }
 
 void reset_all() {
@@ -517,7 +521,7 @@ void reset_all() {
     for (int i = 0; i < threads_list.roots_count; ++i) {
         Root* thread = threads_list.roots + i;
         if (!thread->caller.active) {
-            caller_destroy(&thread->caller);
+            caller_destroy(thread->thread_state->heap, &thread->caller);
             int last = threads_list.roots_count;
             threads_list.roots_count -= 1;
             Root* removed = threads_list.roots + threads_list.roots_count;
@@ -540,7 +544,10 @@ void reset_all() {
 
 void cleanup() {
     for (int i = 0; i < threads_list.roots_count; ++i) {
-        caller_destroy(&threads_list.roots[i].caller);
+        Root* root = threads_list.roots + i;
+        if (root->caller.active) {
+            caller_destroy(root->thread_state->heap, &root->caller);
+        }
     }
 }
 

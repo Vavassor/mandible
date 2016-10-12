@@ -1,8 +1,10 @@
 #pragma once
 
+struct Stack;
+
 namespace logging {
 	enum class Level { Error, Info, Debug, };
-	bool startup();
+	bool startup(Stack* stack);
 	void shutdown();
 	void add_message(Level level, const char* format, ...);
 }

@@ -14,8 +14,10 @@ struct WaveMemory {
     int position;
 };
 
+struct Stack;
+
 WaveDecoder* wave_open_file(const char* filename, WaveOpenError* error,
-                            WaveMemory* memory);
+                            WaveMemory* memory, Stack* stack);
 void wave_close_file(WaveDecoder* decoder);
 int wave_decode_interleaved(WaveDecoder* decoder, int out_channels,
 							float* buffer, int sample_count);

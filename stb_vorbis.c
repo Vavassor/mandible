@@ -267,7 +267,8 @@ extern stb_vorbis * stb_vorbis_open_file_section(FILE *f, int close_handle_on_cl
 
 extern stb_vorbis * stb_vorbis_open_filename(const char *filename,
                                              int *error,
-                                             stb_vorbis_alloc *alloc_buffer);
+                                             stb_vorbis_alloc *alloc_buffer,
+                                             Stack* stack);
 // create an ogg vorbis decoder from a filename via fopen(). on failure,
 // returns NULL and sets *error (possibly to VORBIS_file_open_failure).
 
@@ -749,7 +750,7 @@ struct stb_vorbis
    uint32 f_start;
    int close_on_free;
 #else
-   File* f;
+   File f;
    uint32 f_start;
    int close_on_free;
 #endif
@@ -1304,7 +1305,7 @@ static uint8 get8(vorb *z)
    #else
    {
    uint8 c;
-   s64 bytes_read = read_file(z->f, &c, 1);
+   s64 bytes_read = read_file(&z->f, &c, 1);
    if (bytes_read == 0) { z->eof = TRUE; return 0; }
    return c;
    }
@@ -1338,7 +1339,7 @@ static int getn(vorb *z, uint8 *data, int n)
       return 0;
    }
    #else
-   if (read_file(z->f, data, n))
+   if (read_file(&z->f, data, n))
       return 1;
    else {
       z->eof = 1;
@@ -1361,8 +1362,8 @@ static void skip(vorb *z, int n)
    }
    #else
    {
-      s64 x = get_file_offset(z->f);
-      seek_file(z->f, x+n);
+      s64 x = get_file_offset(&z->f);
+      seek_file(&z->f, x+n);
    }
    #endif
 }
@@ -1402,10 +1403,10 @@ static int set_file_offset(stb_vorbis *f, unsigned int loc)
    } else {
       loc += f->f_start;
    }
-   if (!seek_file(f->f, loc))
+   if (seek_file(&f->f, loc) == loc)
       return 1;
    f->eof = 1;
-   // fseek(f->f, f->f_start, SEEK_END);
+   seek_file_from_end(&f->f, f->f_start);
    return 0;
    #endif
 }
@@ -4255,7 +4256,7 @@ static void vorbis_deinit(stb_vorbis *p)
    #ifndef STB_VORBIS_NO_STDIO
    if (p->close_on_free) fclose(p->f);
    #else
-   if (p->close_on_free) close_file(p->f);
+   if (p->close_on_free) close_file(&p->f);
    #endif
 }
 
@@ -4284,7 +4285,6 @@ static void vorbis_init(stb_vorbis *p, stb_vorbis_alloc *z)
    p->f = NULL;
    #else
    p->close_on_free = FALSE;
-   p->f = NULL;
    #endif
 }
 
@@ -4535,7 +4535,7 @@ unsigned int stb_vorbis_get_file_offset(stb_vorbis *f)
    #ifndef STB_VORBIS_NO_STDIO
    return ftell(f->f) - f->f_start;
    #else
-   return get_file_offset(f->f) - f->f_start;
+   return get_file_offset(&f->f) - f->f_start;
    #endif
 }
 
@@ -5068,15 +5068,16 @@ stb_vorbis * stb_vorbis_open_filename(const char *filename, int *error, stb_vorb
 
 #else
 
-stb_vorbis * stb_vorbis_open_filename(const char *filename, int *error, stb_vorbis_alloc *alloc)
+stb_vorbis * stb_vorbis_open_filename(const char *filename, int *error, stb_vorbis_alloc *alloc, Stack* stack)
 {
-   File *file = open_file(FileType::Asset_Audio, FileMode::Read, filename);
-   if (file) {
+   File file;
+   bool opened = open_file(&file, FileType::Asset_Audio, FileMode::Read, filename, stack);
+   if (opened) {
       stb_vorbis *f, p;
       vorbis_init(&p, alloc);
       p.f = file;
-      p.f_start = get_file_offset(file);
-      p.stream_len = get_file_size(file);
+      p.f_start = get_file_offset(&file);
+      p.stream_len = get_file_size(&file);
       p.close_on_free = TRUE;
       if (start_decoder(&p)) {
          f = vorbis_alloc(&p);

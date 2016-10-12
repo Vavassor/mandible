@@ -1,6 +1,6 @@
 #include "glx_extensions.h"
 
-#include <cstring>
+#include "string_utilities.h"
 
 // Internal Get Procedure Address
 #define IntGetProcAddress(name) \
@@ -29,9 +29,9 @@ struct ExtensionMapping {
     bool* loaded;
 };
 
-#define EXTENSION_MAP_COUNT 1
+static const int extension_map_count = 1;
 
-static ExtensionMapping extension_map[EXTENSION_MAP_COUNT] = {
+static ExtensionMapping extension_map[extension_map_count] = {
     { "GLX_EXT_swap_control", load_ext_swap_control, &have_ext_swap_control },
 };
 
@@ -45,8 +45,8 @@ void load_glx_extensions(Display* display, int screen) {
     clear_extension_variables();
 
     const char* extensions_string = glXQueryExtensionsString(display, screen);
-    for (int i = 0; i < EXTENSION_MAP_COUNT; ++i) {
-        if (std::strstr(extensions_string, extension_map[i].name) &&
+    for (int i = 0; i < extension_map_count; ++i) {
+        if (find_string(extensions_string, extension_map[i].name) &&
             extension_map[i].load_extension) {
             int failed = extension_map[i].load_extension();
             if (failed > 0) {

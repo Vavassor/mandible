@@ -6,14 +6,16 @@ void append_string(char* to, int to_size, const char* from) {
     ASSERT(from);
     ASSERT(to);
     ASSERT(string_size(from) + string_size(to) <= to_size);
-    while (*(++to) && --to_size);
-    while ((*to++ = *from++) && --to_size);
+    do {
+        ++to;
+        --to_size;
+    } while (*to && to_size);
+    copy_string(to, to_size, from);
 }
 
 int copy_string(char* to, int to_size, const char* from) {
     ASSERT(from);
     ASSERT(to);
-    ASSERT(string_size(to) <= to_size);
     int i;
     for (i = 0; i < to_size - 1; ++i) {
         if (from[i] == '\0') {
@@ -22,6 +24,7 @@ int copy_string(char* to, int to_size, const char* from) {
         to[i] = from[i];
     }
     to[i] = '\0';
+    ASSERT(i < to_size);
     return i;
 }
 
@@ -91,7 +94,8 @@ static inline int char_to_integer(char c) {
 
 #define ULLONG_MAX static_cast<unsigned long long>(~0ull)
 
-static unsigned long long string_to_ull(const char* string, char** after, int base) {
+static unsigned long long string_to_ull(const char* string, char** after,
+                                        int base) {
     ASSERT(string);
     ASSERT(base >= 0 && base != 1 && base <= 36);
 
@@ -140,7 +144,8 @@ static unsigned long long string_to_ull(const char* string, char** after, int ba
         } else {
             digits_read = true;
             if (!out_of_range) {
-                if (result > ULLONG_MAX / base || result * base > ULLONG_MAX - digit) {
+                if (result > ULLONG_MAX / base ||
+                    result * base > ULLONG_MAX - digit) {
                     out_of_range = true;
                 }
                 result = result * base + digit;

@@ -10,11 +10,18 @@
 #include "posix_errors.h"
 #include "asset_handling.h"
 #include "profile.h"
+#include "assert.h"
+
+// @Incomplete: This is too gross just to allocate with stb_image.h
+static Heap perm_heap;
+void* fake_malloc(size_t bytes) { return heap_allocate(&perm_heap, bytes); }
+void* fake_realloc(void* memory, size_t bytes) { return heap_reallocate(&perm_heap, memory, bytes); }
+void fake_free(void* memory) { heap_deallocate(&perm_heap, memory); }
 
 #define STBI_NO_STDIO
-#define STBI_MALLOC  heap_allocate
-#define STBI_REALLOC heap_reallocate
-#define STBI_FREE    heap_deallocate
+#define STBI_MALLOC  fake_malloc
+#define STBI_REALLOC fake_realloc
+#define STBI_FREE    fake_free
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -40,19 +47,26 @@ struct Icon {
     int bytes_per_pixel;
 };
 
-static void load_icons(Icon* icons, const char** names, int count) {
+static void load_icons(Icon* icons, const char** names, int count,
+                       Stack* stack) {
     FOR_N (i, count) {
+        StackHandle icon_base = stack->top;
+
         void* data;
         s64 data_size;
-        bool loaded = load_whole_file(FileType::Asset_Icon, names[i], &data,
-                                      &data_size);
+        bool loaded = load_file_to_stack(FileType::Asset_Icon, names[i],
+                                         &data, &data_size, stack);
         if (loaded) {
             Icon* icon = icons + i;
             icon->data = stbi_load_from_memory(static_cast<u8*>(data),
                                                data_size,
                                                &icon->width, &icon->height,
                                                &icon->bytes_per_pixel, 0);
-            DEALLOCATE(data);
+            if (!icon->data) {
+                LOG_ERROR("Could not decode image %s. STBI reason: %s",
+                          names[i], stbi_failure_reason());
+            }
+            stack_rewind(stack, icon_base);
         }
     }
 }
@@ -65,15 +79,12 @@ static void unload_icons(Icon* icons, int count) {
 
 // Canvas Functions............................................................
 
-static bool canvas_create(Canvas* canvas, int width, int height) {
+static bool canvas_create(Canvas* canvas, int width, int height,
+                          Stack* stack) {
     canvas->width = width;
     canvas->height = height;
-    canvas->pixels = ALLOCATE(u32, width * height);
+    canvas->pixels = STACK_ALLOCATE(stack, u32, width * height, nullptr);
     return canvas->pixels;
-}
-
-static void canvas_destroy(Canvas* canvas) {
-    SAFE_DEALLOCATE(canvas->pixels);
 }
 
 // Clock Functions.............................................................
@@ -121,11 +132,15 @@ static void swap_red_and_blue(unsigned long* out, u32* in, int pixel_count) {
     }
 }
 
-static bool load_pixmap(Pixmap* out_pixmap, Display* display,
-                        const char* path) {
+static bool load_pixmap(Pixmap* out_pixmap, Display* display, const char* path,
+                        Stack* stack) {
+
+    StackHandle icon_base = stack->top;
+
     void* data;
     s64 data_size;
-    bool loaded = load_whole_file(FileType::Asset_Icon, path, &data, &data_size);
+    bool loaded = load_file_to_stack(FileType::Asset_Icon, path, &data,
+                                     &data_size, stack);
     if (!loaded) {
         return false;
     }
@@ -133,9 +148,12 @@ static bool load_pixmap(Pixmap* out_pixmap, Display* display,
     int height;
     int bytes_per_pixel;
     u8* pixel_data = stbi_load_from_memory(static_cast<u8*>(data), data_size,
-                                           &width, &height, &bytes_per_pixel, 0);
-    DEALLOCATE(data);
+                                           &width, &height, &bytes_per_pixel,
+                                           0);
+    stack_rewind(stack, icon_base);
     if (!pixel_data) {
+        LOG_ERROR("Could not decode image %s. STBI reason: %s", path,
+                  stbi_failure_reason());
         return false;
     }
 
@@ -188,7 +206,8 @@ static void unload_pixmap(Display* display, Pixmap pixmap) {
 }
 
 static void set_icons(Display* display, Window window, Atom net_wm_icon,
-                      Atom cardinal, Icon* icons, int icon_count) {
+                      Atom cardinal, Icon* icons, int icon_count,
+                      Stack* stack) {
 
     int total_longs = 0;
     for (int i = 0; i < icon_count; ++i) {
@@ -200,8 +219,7 @@ static void set_icons(Display* display, Window window, Atom net_wm_icon,
     // Repeat this for every icon; the order is unimportant.
 
     unsigned long* icon_buffer;
-    size_t total_size = sizeof(unsigned long) * total_longs;
-    icon_buffer = ALLOCATE(unsigned long, total_size);
+    SCOPED_ALLOCATE(stack, &icon_buffer, unsigned long, total_longs);
     unsigned long* buffer = icon_buffer;
     for (int i = 0; i < icon_count; ++i) {
         *buffer++ = icons[i].width;
@@ -218,8 +236,6 @@ static void set_icons(Display* display, Window window, Atom net_wm_icon,
                     PropModeReplace,
                     reinterpret_cast<const unsigned char*>(icon_buffer),
                     total_longs);
-
-    DEALLOCATE(icon_buffer);
 }
 
 struct Mesh {
@@ -238,16 +254,20 @@ static void destroy_mesh(Mesh* mesh) {
     glDeleteVertexArrays(1, &mesh->vertex_array);
 }
 
-static void resize_framebuffer(GLuint framebuffer, GLuint target_texture, int width, int height, bool is_float = false) {
+static void resize_framebuffer(GLuint framebuffer, GLuint target_texture,
+                               int width, int height, bool is_float = false) {
+
     glBindTexture(GL_TEXTURE_2D, target_texture);
     if (is_float) {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0,
+                     GL_RGBA, GL_FLOAT, nullptr);
     } else {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     }
-
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target_texture, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           target_texture, 0);
 
     GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT0 };
     glDrawBuffers(ARRAY_COUNT(draw_buffers), draw_buffers);
@@ -262,35 +282,170 @@ static inline void cycle_increment(int* s, int n) {
     *s = (*s + 1) % n;
 }
 
-#if 0
-// code saved for reference
-static inline void cycle_decrement(int* s, int n) {
-    *s = (*s + (n - 1)) % n;
+static const char* bool_to_string(bool v) {
+    return v ? "true" : "false";
 }
-#endif
 
 static int handle_x_error(Display* display, XErrorEvent* event) {
     char text[128];
     XGetErrorText(display, event->error_code, text, sizeof text);
-    LOG_ERROR("%s", text);
+    LOG_ERROR("An error with X has occurred. %s", text);
     return 0;
 }
 
-int main(int argc, char** argv) {
-    static_cast<void>(argc);
-    static_cast<void>(argv);
+static int handle_x_io_error(Display* display) {
+    LOG_ERROR("A fatal error with X has occurred.");
+    return 0;
+}
 
+#if 0
+// experiment_malloc_hacking
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <dlfcn.h>
+#include <stdio.h>
+#include <malloc.h>
+
+static void* (*old_malloc_hook)(size_t size, const void* caller);
+static void* (*old_realloc_hook)(void* ptr, size_t size, const void* caller);
+static void (*old_free_hook)(void* ptr, const void* caller);
+static void* (*old_memalign_hook)(size_t alignment, size_t size, const void* caller);
+
+static void* my_malloc_hook(size_t size, const void* caller);
+static void* my_realloc_hook(void* ptr, size_t size, const void* caller);
+static void my_free_hook(void* ptr, const void* caller);
+static void* my_memalign_hook(size_t alignment, size_t size, const void* caller);
+
+static void experiment_malloc_hacking() {
+    old_malloc_hook = __malloc_hook;
+    old_realloc_hook = __realloc_hook;
+    old_free_hook = __free_hook;
+    old_memalign_hook = __memalign_hook;
+    __malloc_hook = my_malloc_hook;
+    __realloc_hook = my_realloc_hook;
+    __free_hook = my_free_hook;
+    __memalign_hook = my_memalign_hook;
+}
+
+static void* my_malloc_hook(size_t size, const void* caller) {
+    void* result;
+    // Restore all old hooks
+    __malloc_hook = old_malloc_hook;
+    __realloc_hook = old_realloc_hook;
+    __free_hook = old_free_hook;
+    __memalign_hook = old_memalign_hook;
+    // Call recursively
+    result = malloc(size);
+    // Save underlying hooks
+    old_malloc_hook = __malloc_hook;
+    old_realloc_hook = __realloc_hook;
+    old_free_hook = __free_hook;
+    old_memalign_hook = __memalign_hook;
+    // printf might call malloc, so protect it too.
+    printf("malloc (%zu) returns %p\n", size, result);
+    // Restore our own hooks
+    __malloc_hook = my_malloc_hook;
+    __realloc_hook = my_realloc_hook;
+    __free_hook = my_free_hook;
+    __memalign_hook = my_memalign_hook;
+    return result;
+}
+
+static void* my_realloc_hook(void* ptr, size_t size, const void* caller) {
+    void* result;
+    // Restore all old hooks
+    __malloc_hook = old_malloc_hook;
+    __realloc_hook = old_realloc_hook;
+    __free_hook = old_free_hook;
+    __memalign_hook = old_memalign_hook;
+    // Call recursively
+    result = realloc(ptr, size);
+    // Save underlying hooks
+    old_malloc_hook = __malloc_hook;
+    old_realloc_hook = __realloc_hook;
+    old_free_hook = __free_hook;
+    old_memalign_hook = __memalign_hook;
+    // printf might call realloc, so protect it too.
+    printf("realloc (%p,%zu) returns %p\n", ptr, size, result);
+    // Restore our own hooks
+    __malloc_hook = my_malloc_hook;
+    __realloc_hook = my_realloc_hook;
+    __free_hook = my_free_hook;
+    __memalign_hook = my_memalign_hook;
+    return result;
+}
+
+static void my_free_hook(void* ptr, const void* caller) {
+    // Restore all old hooks
+    __malloc_hook = old_malloc_hook;
+    __realloc_hook = old_realloc_hook;
+    __free_hook = old_free_hook;
+    __memalign_hook = old_memalign_hook;
+    // Call recursively
+    free(ptr);
+    // Save underlying hooks
+    old_malloc_hook = __malloc_hook;
+    old_realloc_hook = __realloc_hook;
+    old_free_hook = __free_hook;
+    old_memalign_hook = __memalign_hook;
+    // printf might call free, so protect it too.
+    printf("freed pointer %p\n", ptr);
+    // Restore our own hooks
+    __malloc_hook = my_malloc_hook;
+    __realloc_hook = my_realloc_hook;
+    __free_hook = my_free_hook;
+    __memalign_hook = my_memalign_hook;
+}
+
+static void* my_memalign_hook(size_t alignment, size_t size, const void* caller) {
+    void* result;
+    // Restore all old hooks
+    __malloc_hook = old_malloc_hook;
+    __realloc_hook = old_realloc_hook;
+    __free_hook = old_free_hook;
+    __memalign_hook = old_memalign_hook;
+    // Call recursively
+    result = memalign(alignment, size);
+    // Save underlying hooks
+    old_malloc_hook = __malloc_hook;
+    old_realloc_hook = __realloc_hook;
+    old_free_hook = __free_hook;
+    old_memalign_hook = __memalign_hook;
+    // printf might call memalign, so protect it too.
+    printf("memalign (%zu,%zu) returns %p\n", alignment, size, result);
+    // Restore our own hooks
+    __malloc_hook = my_malloc_hook;
+    __realloc_hook = my_realloc_hook;
+    __free_hook = my_free_hook;
+    __memalign_hook = my_memalign_hook;
+    return result;
+}
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
+
+#endif // experiment_malloc_hacking
+
+namespace {
     const int canvas_width = 480;
     const int canvas_height = 270;
-    const int pixel_scale = 3;
+    const int pixel_scale = 2;
     const char* title = "mandible";
     const double frame_frequency = 1.0 / 60.0;
     const char* icon_names[] = { "Icon.png", };
 
-    bool vertical_synchronization = true;
+    bool vertical_synchronization = false;
     bool disable_ntsc_style_rendering = false;
 
+    Stack perm_stack;
+    Stack temp_stack;
+    Heap profile_heap;
     Display* display; // the connection to the X server
+    XVisualInfo* visual;
     Colormap colormap;
     Window window;
     Atom wm_delete_window;
@@ -321,52 +476,91 @@ int main(int argc, char** argv) {
     } samplers;
     GLuint framebuffers[3];
     GLuint target_textures[3];
-    Clock clock;
+    Clock frame_clock;
+    int frame_count; // used for NTSC dot crawl cycling
     Canvas canvas;
+}
 
-    // Logging has to be enabled before anything else so it can log any setup
-    // errors as the occur.
-    logging::startup();
+int main(int argc, char** argv) {
+    static_cast<void>(argc);
+    static_cast<void>(argv);
 
     // Set the size limitations for core files. This also implicitly enables
     // core files to be output in the event of a crash, if user settings aren't
     // already set to allow that.
+    {
+        rlimit core_limits;
+        core_limits.rlim_cur = core_limits.rlim_max = KIBIBYTES(64);
+        if (setrlimit(RLIMIT_CORE, &core_limits) == -1) {
+            report_error_in_a_popup("Failed to set the process' size "
+                                    "limitations for core files.", false);
+            // Don't exit here. This may mean core files won't be output after
+            // a crash—and that's worth noting—but it's not cause to prevent
+            // the program from running.
+        }
+    }
 
-    rlimit core_limits;
-    core_limits.rlim_cur = core_limits.rlim_max = KIBIBYTES(64);
-    setrlimit(RLIMIT_CORE, &core_limits);
+    // Set up signal handlers to detect crashes and unexpected errors and
+    // report them to the screen. These will be replaced later with ones that
+    // report to the logging system as soon as that system can be started up.
+    bool signal_handler_stack_set = set_posix_signal_handler_stack();
+    if (!signal_handler_stack_set) {
+        report_error_in_a_popup("Was not able to set the stack for POSIX "
+                                "signal handlers", false);
+        return EXIT_FAILURE;
+    }
+    bool initial_signal_handler_set = register_initial_posix_signal_handlers();
+    if (!initial_signal_handler_set) {
+        report_error_in_a_popup("Was not able to register initial POSIX "
+                                "signal handlers.", false);
+        // Don't exit here. These signal handlers were only a precaution to
+        // report errors before logging is started anyhow.
+    }
 
-    // Set handlers to log crashes and unexpected errors.
+    // Obtain memory for this thread's stacks and heaps and set those up.
+    {
+        bool made = true;
+        made &= stack_create(&perm_stack, MEBIBYTES(2));
+        made &= heap_create_on_stack(&perm_heap, &perm_stack, MEBIBYTES(1));
+        made &= stack_create_on_stack(&temp_stack, &perm_stack, KIBIBYTES(64));
+        made &= heap_create_on_stack(&profile_heap, &perm_stack, KIBIBYTES(64));
+        if (!made) {
+            report_error_in_a_popup("Failed to obtain enough memory for "
+                                    "global heaps and stacks.", false);
+            return EXIT_FAILURE;
+        }
+    }
 
-    if (!register_posix_signal_handlers()) {
-        LOG_ERROR("Was not able to set the POSIX signal handlers.");
+    // Start the logging system as soon as memory is obtained.
+    bool logging_started = logging::startup(&temp_stack);
+    if (!logging_started) {
+        report_error_in_a_popup("Could not start the logging system.", false);
         return EXIT_FAILURE;
     }
 
+    // After logging has been started, the initial POSIX signal handlers can
+    // be replaced with ones that log crashes and unexpected errors.
+    bool signal_handler_set = register_posix_signal_handlers();
+    if (!signal_handler_set) {
+        LOG_ERROR("Was not able to register the POSIX signal handlers.");
+        return EXIT_FAILURE;
+    }
+
+    // Profiling of this thread can start any time after memory is
+    // initialised. It kind of doesn't matter when, it just has to be before
+    // the thread enters a profile period.
+    PROFILE_THREAD_ENTER(&profile_heap);
+
+    // These error handlers should be set before doing anything with X.
     XSetErrorHandler(handle_x_error);
+    XSetIOErrorHandler(handle_x_io_error);
 
-    PROFILE_THREAD_ENTER();
-
-    // Connect to the X server
+    // Connect to the X server, which is used for display and input services.
     display = XOpenDisplay(nullptr);
     if (!display) {
         LOG_ERROR("Cannot connect to X server");
         return EXIT_FAILURE;
     }
-
-    // The dimensions of the final canvas after up-scaling.
-
-    int scaled_width = pixel_scale * canvas_width;
-    int scaled_height = pixel_scale * canvas_height;
-
-    int pass1_width = canvas_width;
-    int pass1_height = canvas_height;
-
-    int pass2_width = scaled_width;
-    int pass2_height = canvas_height;
-
-    int pass3_width = scaled_width;
-    int pass3_height = scaled_height;
 
     // Choose the abstract "Visual" type that will be used to describe both
     // the window and the OpenGL rendering context.
@@ -374,13 +568,17 @@ int main(int argc, char** argv) {
     GLint visual_attributes[] = {
         GLX_RGBA, GLX_DEPTH_SIZE, 24, GLX_DOUBLEBUFFER, None
     };
-    XVisualInfo* visual = glXChooseVisual(display, DefaultScreen(display),
-                                          visual_attributes);
+    visual = glXChooseVisual(display, DefaultScreen(display),
+                             visual_attributes);
     if (!visual) {
         LOG_ERROR("Wasn't able to choose an appropriate Visual type given the"
                   "requested attributes. [The Visual type contains information"
                   "on color mappings for the display hardware]");
     }
+
+    // The dimensions of the final canvas after up-scaling.
+    int scaled_width = pixel_scale * canvas_width;
+    int scaled_height = pixel_scale * canvas_height;
 
     // Create the window.
     colormap = XCreateColormap(display, DefaultRootWindow(display),
@@ -395,7 +593,7 @@ int main(int argc, char** argv) {
                            InputOutput, visual->visual,
                            CWColormap | CWEventMask, &window_attributes);
 
-    // Register to recieve window close messages.
+    // Register to receive window close messages.
     wm_delete_window = XInternAtom(display, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(display, window, &wm_delete_window, 1);
 
@@ -438,7 +636,8 @@ int main(int argc, char** argv) {
     // Set the window icons.
 
     // Set the Pixmap for the ICCCM version of the application icon.
-    bool icccm_icon_loaded = load_pixmap(&icccm_icon, display, icon_names[0]);
+    bool icccm_icon_loaded = load_pixmap(&icccm_icon, display, icon_names[0],
+                                         &temp_stack);
     if (!icccm_icon_loaded) {
         LOG_ERROR("Failed to load the ICCCM version of the application icon.");
     }
@@ -459,8 +658,9 @@ int main(int argc, char** argv) {
     net_wm_icon = XInternAtom(display, "_NET_WM_ICON", False);
     cardinal = XInternAtom(display, "CARDINAL", False);
     Icon icons[ARRAY_COUNT(icon_names)];
-    load_icons(icons, icon_names, ARRAY_COUNT(icon_names));
-    set_icons(display, window, net_wm_icon, cardinal, icons, ARRAY_COUNT(icons));
+    load_icons(icons, icon_names, ARRAY_COUNT(icon_names), &temp_stack);
+    set_icons(display, window, net_wm_icon, cardinal, icons,
+              ARRAY_COUNT(icons), &temp_stack);
     unload_icons(icons, ARRAY_COUNT(icons));
 
     // Make the window visible.
@@ -480,17 +680,31 @@ int main(int argc, char** argv) {
 
     load_glx_extensions(display, DefaultScreen(display));
 
-    if (ogl_LoadFunctions() == ogl_LOAD_FAILED) {
+    int ogl_load_result = ogl_LoadFunctions();
+    if (ogl_load_result == ogl_LOAD_FAILED) {
         LOG_ERROR("Failed to load opengl extensions.");
     }
 
-    // Initialise global opengl values.
+    // Initialise global OpenGL values.
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glDisable(GL_DEPTH_TEST);
 
     // Setup the canvas.
 
-    canvas_create(&canvas, canvas_width, canvas_height);
+    int pass1_width = canvas_width;
+    int pass1_height = canvas_height;
+
+    int pass2_width = scaled_width;
+    int pass2_height = canvas_height;
+
+    int pass3_width = scaled_width;
+    int pass3_height = scaled_height;
+
+    bool canvas_made = canvas_create(&canvas, canvas_width, canvas_height,
+                                     &perm_stack);
+    if (!canvas_made) {
+        LOG_ERROR("The canvas was not able to be created.");
+    }
 
     // Create the rectangle mesh for drawing the canvas.
     {
@@ -513,26 +727,30 @@ int main(int argc, char** argv) {
         int vertex_size = (2 + 2) * sizeof(float);
 
         glBindBuffer(GL_ARRAY_BUFFER, canvas_mesh.buffers[0]);
-        glBufferData(GL_ARRAY_BUFFER, num_vertices * vertex_size, vertices, GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, num_vertices * vertex_size, vertices,
+                     GL_STATIC_DRAW);
 
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, vertex_size, 0);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, vertex_size, reinterpret_cast<GLvoid*>(sizeof(float) * 2));
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, vertex_size,
+                              reinterpret_cast<GLvoid*>(sizeof(float) * 2));
 
         glEnableVertexAttribArray(0);
         glEnableVertexAttribArray(1);
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, canvas_mesh.buffers[1]);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLushort) * canvas_mesh.num_indices, elements, GL_STATIC_DRAW);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                     sizeof(GLushort) * canvas_mesh.num_indices, elements,
+                     GL_STATIC_DRAW);
 
         glBindVertexArray(0);
     }
 
     // shader uniform setup for samplers
     {
-        canvas_shader = load_shader_program(nullptr, nullptr);
-        pass1_shader = load_shader_program(nullptr, "yiq.fs");
-        pass2_shader = load_shader_program(nullptr, "composite.fs");
-        pass3_shader = load_shader_program(nullptr, "fringing.fs");
+        canvas_shader = load_shader_program(nullptr, nullptr, &temp_stack);
+        pass1_shader = load_shader_program(nullptr, "yiq.fs", &temp_stack);
+        pass2_shader = load_shader_program(nullptr, "composite.fs", &temp_stack);
+        pass3_shader = load_shader_program(nullptr, "fringing.fs", &temp_stack);
 
         glUseProgram(canvas_shader);
         glUniform1i(glGetUniformLocation(canvas_shader, "texture"), 0);
@@ -560,21 +778,27 @@ int main(int argc, char** argv) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 3, 3, 0, GL_RGB, GL_FLOAT, data);
     }
 
-    glGenTextures(1, &canvas_texture);
-    glBindTexture(GL_TEXTURE_2D, canvas_texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, canvas.width, canvas.height, 0,
-                 GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, nullptr);
+    // canvas texture
+    {
+        glGenTextures(1, &canvas_texture);
+        glBindTexture(GL_TEXTURE_2D, canvas_texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, canvas.width, canvas.height, 0,
+                     GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, nullptr);
+    }
 
-    glGenSamplers(ARRAY_COUNT(samplers.array), samplers.array);
+    // global samplers
+    {
+        glGenSamplers(ARRAY_COUNT(samplers.array), samplers.array);
 
-    glSamplerParameteri(samplers.nearest, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glSamplerParameteri(samplers.nearest, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glSamplerParameteri(samplers.nearest, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glSamplerParameteri(samplers.nearest, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-    glSamplerParameteri(samplers.linear, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glSamplerParameteri(samplers.linear, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glSamplerParameteri(samplers.linear, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glSamplerParameteri(samplers.linear, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    glBindSampler(0, samplers.nearest);
-    glBindSampler(1, samplers.nearest);
+        glBindSampler(0, samplers.nearest);
+        glBindSampler(1, samplers.nearest);
+    }
 
     // Initialise the framebuffers and their associated textures.
     {
@@ -586,11 +810,13 @@ int main(int argc, char** argv) {
     }
 
     // Initialise any other resources needed before the main loop starts.
-    input::startup();
-    audio::startup();
-    game::startup();
+    {
+        input::startup();
+        audio::startup();
+        game::startup(&perm_heap, &temp_stack);
+    }
 
-    // Enable Vertical Synchronisation.
+    // Enable Vertical Synchronization.
     if (!have_ext_swap_control) {
         glXSwapIntervalEXT(display, window, 1);
     } else {
@@ -598,9 +824,9 @@ int main(int argc, char** argv) {
     }
 
     LOG_DEBUG("vertical synchronization: %s",
-              (vertical_synchronization) ? "true" : "false");
+              bool_to_string(vertical_synchronization));
 
-    initialise_clock(&clock);
+    initialise_clock(&frame_clock);
 
     // Flush the connection to the display before starting the main loop.
     XSync(display, False);
@@ -609,14 +835,112 @@ int main(int argc, char** argv) {
     struct {
         double total_time;
         int frame_count;
-    } fps;
+    } fps = {};
+
+    // for determining how many game updates to do in a given frame
+    struct {
+        const double frequency = 1.0 / 60.0;
+        double start_time;
+        double accumulator;
+    } update;
+    update.start_time = get_time(&frame_clock);
+    update.accumulator = 0.0;
+
+    // The Program Loop ▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚
 
     bool quit = false;
     while (!quit) {
         // Record when the frame starts.
-        double frame_start_time = get_time(&clock);
+        double frame_start_time = get_time(&frame_clock);
 
-        // Push the last frame as soon as possible.
+        PROFILE_BEGIN_NAMED("main/loop/X11 events");
+
+        // Flush the events queue and respond to any pertinent events.
+        while (XPending(display) > 0) {
+            XEvent event = {};
+            XNextEvent(display, &event);
+            switch (event.type) {
+                case KeyPress: {
+                    XKeyEvent key_press = event.xkey;
+                    KeySym keysym = XLookupKeysym(&key_press, 0);
+                    input::on_key_press(keysym);
+                    break;
+                }
+                case KeyRelease: {
+                    XKeyEvent key_release = event.xkey;
+                    bool auto_repeated = false;
+
+                    // Examine the next event in the queue and if it's a
+                    // key-press generated by auto-repeating, discard it and
+                    // ignore this key release.
+
+                    XEvent lookahead = {};
+                    if (XPending(display) > 0 && XPeekEvent(display, &lookahead)) {
+                        XKeyEvent next_press = lookahead.xkey;
+                        if (key_release.time == next_press.time &&
+                            key_release.keycode == next_press.keycode) {
+                            // Remove the lookahead event.
+                            XNextEvent(display, &lookahead);
+                            auto_repeated = true;
+                        }
+                    }
+
+                    if (!auto_repeated) {
+                        KeySym keysym = XLookupKeysym(&key_release, 0);
+                        input::on_key_release(keysym);
+                    }
+                    break;
+                }
+                case ButtonPress: {
+                    XButtonPressedEvent button_press = event.xbutton;
+                    input::on_button_press(button_press.button);
+                    break;
+                }
+                case ButtonRelease: {
+                    XButtonReleasedEvent button_release = event.xbutton;
+                    input::on_button_release(button_release.button);
+                    break;
+                }
+                case MotionNotify: {
+                    XMotionEvent motion = event.xmotion;
+                    int x = motion.x / pixel_scale;
+                    int y = motion.y / pixel_scale;
+                    input::on_mouse_move(x, y);
+                    break;
+                }
+                case ClientMessage: {
+                    XClientMessageEvent client_message = event.xclient;
+                    if (client_message.data.l[0] == wm_delete_window) {
+                        XDestroyWindow(display, window);
+                        quit = true;
+                    }
+                    break;
+                }
+            }
+        }
+
+        PROFILE_END();
+
+        input::poll();
+
+        // Update the game.
+        {
+            double new_time = get_time(&frame_clock);
+            update.accumulator += new_time - update.start_time;
+            update.start_time = new_time;
+            while (update.accumulator >= update.frequency) {
+                game::update(&temp_stack);
+                update.accumulator -= update.frequency;
+            }
+        }
+
+        game::draw(&canvas, &temp_stack);
+
+        // The previous frame's profiling data has been drawn at this point if
+        // the profile overlay is visible, so it's safe to clear it now.
+        profile::reset_all();
+
+        // Render the drawn canvas.
 
         PROFILE_BEGIN_NAMED("main/loop/render");
 
@@ -645,7 +969,6 @@ int main(int argc, char** argv) {
             draw_mesh(&canvas_mesh);
 
         } else {
-            static int frame_count = 0;
             cycle_increment(&frame_count, 3);
 
             // 1st pass
@@ -716,121 +1039,49 @@ int main(int argc, char** argv) {
 
         PROFILE_END();
 
-        if (fps.total_time >= 1.0) {
-            game::update_fps(fps.frame_count);
-            fps.total_time = 0.0;
-            fps.frame_count = 0;
-        }
-
-        game::update_and_draw(&canvas);
-
-        input::poll();
-
-        PROFILE_BEGIN_NAMED("main/loop/X11 events");
-
-        // Flush the events queue and respond to any pertinent events.
-        while (XPending(display) > 0) {
-            XEvent event = {};
-            XNextEvent(display, &event);
-            switch (event.type) {
-                case KeyPress: {
-                    XKeyEvent key_press = event.xkey;
-                    KeySym keysym = XLookupKeysym(&key_press, 0);
-                    input::on_key_press(keysym);
-                    break;
-                }
-                case KeyRelease: {
-                    XKeyEvent key_release = event.xkey;
-                    bool auto_repeated = false;
-
-                    // Examine the next event in the queue and if it's a
-                    // key-press generated by auto-repeating, discard it and
-                    // ignore this key release.
-
-                    XEvent lookahead = {};
-                    if (XPending(display) > 0 && XPeekEvent(display, &lookahead)) {
-                        XKeyEvent next_press = lookahead.xkey;
-                        if (key_release.time == next_press.time &&
-                            key_release.keycode == next_press.keycode) {
-                            // Remove the lookahead event.
-                            XNextEvent(display, &lookahead);
-                            auto_repeated = true;
-                        }
-                    }
-
-                    if (!auto_repeated) {
-                        KeySym keysym = XLookupKeysym(&key_release, 0);
-                        input::on_key_release(keysym);
-                    }
-                    break;
-                }
-                case ButtonPress: {
-                    XButtonPressedEvent button_press = event.xbutton;
-                    input::on_button_press(button_press.button);
-                    break;
-                }
-                case ButtonRelease: {
-                    XButtonReleasedEvent button_release = event.xbutton;
-                    input::on_button_release(button_release.button);
-                    break;
-                }
-                case MotionNotify: {
-                    XMotionEvent motion = event.xmotion;
-                    int x = motion.x / pixel_scale;
-                    int y = motion.y / pixel_scale;
-                    input::on_mouse_move(x, y);
-                    break;
-                }
-                case ClientMessage: {
-                    XClientMessageEvent client_message = event.xclient;
-                    if (client_message.data.l[0] == wm_delete_window) {
-                        XDestroyWindow(display, window);
-                        quit = true;
-                    }
-                    break;
-                }
-            }
-        }
-
-        PROFILE_END();
-
-        profile::reset_all();
-
         // If the swap-buffer call isn't set to wait for the vertical retrace,
         // the remaining time needs to be waited off here until the next frame
 
         if (!vertical_synchronization) {
-            PROFILE_BEGIN_NAMED("main/loop/sleep");
+            PROFILE_SCOPED_NAMED("main/loop/sleep");
 
-            double frame_thusfar = get_time(&clock) - frame_start_time;
+            double frame_thusfar = get_time(&frame_clock) - frame_start_time;
             if (frame_thusfar < frame_frequency) {
-                go_to_sleep(&clock, frame_frequency - frame_thusfar);
+                go_to_sleep(&frame_clock, frame_frequency - frame_thusfar);
             }
-
-            PROFILE_END();
         }
 
         // Update the frames_per_second counter.
-
-        double frame_end_time = get_time(&clock);
-        fps.total_time += frame_end_time - frame_start_time;
-        fps.frame_count += 1;
+        {
+            double frame_end_time = get_time(&frame_clock);
+            fps.total_time += frame_end_time - frame_start_time;
+            fps.frame_count += 1;
+            if (fps.total_time >= 1.0) {
+                game::update_fps(fps.frame_count);
+                fps.total_time = 0.0;
+                fps.frame_count = 0;
+            }
+        }
     }
 
-    LOG_DEBUG("total heap allocated bytes before shutdown: %lu",
-              get_heap_allocated_total());
+    // Check the memory usage prior to shutdown.
+    {
+        HeapInfo info = heap_get_info(&perm_heap);
+        size_t used = info.used_blocks * sizeof(Heap::Block);
+        size_t total = info.total_blocks * sizeof(Heap::Block);
+        LOG_DEBUG("allocated on heap before shutdown: %zu/%zu B",
+                  used, total);
+    }
 
     // Unload all assets.
     unload_pixmap(display, icccm_icon);
 
     // Shutdown all systems.
-    game::shutdown();
+    game::shutdown(&perm_heap);
     audio::shutdown();
     input::shutdown();
 
     // Free and destroy any system resources.
-    canvas_destroy(&canvas);
-
     glDeleteTextures(ARRAY_COUNT(target_textures), target_textures);
     glDeleteFramebuffers(ARRAY_COUNT(framebuffers), framebuffers);
     glDeleteSamplers(ARRAY_COUNT(samplers.array), samplers.array);
@@ -846,15 +1097,34 @@ int main(int argc, char** argv) {
     XFree(wm_hints);
     XFree(size_hints);
     XFreeColormap(display, colormap);
+    XFree(visual);
     XCloseDisplay(display);
 
+    // The profile heap is on the permanent stack, so everything must be
+    // finished and cleaned up before destroying the stack.
     PROFILE_THREAD_EXIT();
-
     profile::cleanup();
 
-    LOG_DEBUG("total heap allocated bytes after shutdown: %lu",
-              get_heap_allocated_total());
+    // Check the memory usage after shutdown.
+    {
+        size_t used, total;
 
+        ASSERT(temp_stack.top == 0);
+        used = temp_stack.top;
+        total = temp_stack.total_bytes;
+        LOG_DEBUG("allocated on temporary stack after shutdown: %zu/%zu B",
+                  used, total);
+
+        HeapInfo info = heap_get_info(&perm_heap);
+        ASSERT(info.used_blocks == 0);
+        used = info.used_blocks * sizeof(Heap::Block);
+        total = info.total_blocks * sizeof(Heap::Block);
+        LOG_DEBUG("allocated on heap after shutdown: %zu/%zu B", used, total);
+    }
+
+    stack_destroy(&perm_stack);
+
+    // Keep logging open until last so it can record any closing errors.
     logging::shutdown();
 
     return 0;

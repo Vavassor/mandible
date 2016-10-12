@@ -116,10 +116,10 @@ struct Device {
     u16 version;
 };
 
-#define DEVICE_COLLECTION_MAX 8
+static const int device_collection_max = 8;
 
 struct DeviceCollection {
-    Device devices[DEVICE_COLLECTION_MAX];
+    Device devices[device_collection_max];
     int device_count;
 };
 
@@ -290,7 +290,7 @@ static bool js_setup_device(Device* device) {
 }
 
 static void add_device(DeviceCollection* device_collection, udev_device* device) {
-    if (device_collection->device_count >= DEVICE_COLLECTION_MAX) {
+    if (device_collection->device_count >= device_collection_max) {
         ASSERT(!"too many input devices!");
         return;
     }
@@ -505,12 +505,12 @@ static void update_controller_from_gamepad(Controller* controller, Device* devic
 
 // Mouse Functions.............................................................
 
-#define BUTTON_COUNT 2
+static const int button_count = 2;
 
 struct MouseState {
     int x, y;
-    bool buttons_pressed[BUTTON_COUNT];
-    int edge_counts[BUTTON_COUNT];
+    bool buttons_pressed[button_count];
+    int edge_counts[button_count];
 };
 
 static void press_button(MouseState* mouse_state, unsigned int button) {
@@ -535,7 +535,7 @@ static void move_mouse(MouseState* mouse_state, int x, int y) {
 }
 
 static void update_button_change_counts(MouseState* mouse_state) {
-    for (int i = 0; i < BUTTON_COUNT; ++i) {
+    for (int i = 0; i < button_count; ++i) {
         mouse_state->edge_counts[i] += 1;
     }
 }

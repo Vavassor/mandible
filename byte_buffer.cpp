@@ -1,10 +1,9 @@
 #include "byte_buffer.h"
 
-#include "memory.h"
 #include "assert.h"
 
 void clear(ByteBuffer* buffer) {
-    DEALLOCATE(buffer->data);
+    stack_rewind(buffer->stack, buffer->handle);
     *buffer = {};
 }
 
@@ -15,21 +14,17 @@ void insert8(ByteBuffer* buffer, u8 value) {
         if (end < 16) {
             end = 16;
         }
-        u8* data = ALLOCATE(u8, end);
+        u8* data = STACK_REALLOCATE(buffer->stack, u8, end, &buffer->handle);
         if (!data) {
             buffer->reallocation_error = true;
             return;
-        }
-        buffer->end = end;
-        if (buffer->data) {
-            copy_memory(data, buffer->data, buffer->end);
-            DEALLOCATE(buffer->data);
         }
         buffer->data = data;
     }
     u8* pointer = static_cast<u8*>(buffer->data);
     pointer[buffer->position] = value;
     buffer->position += 1;
+    return;
 }
 
 void insert16(ByteBuffer* buffer, u16 x) {

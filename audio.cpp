@@ -145,7 +145,7 @@ static void format_buffer_from_float(float* in_samples, void* out_samples, int f
 #if 0
 // @Unused: but very useful for testing!
 
-#define F_TAU 6.28318530717958647692f
+static const float tau = 6.28318530717958647692f;
 
 static float pitch_to_frequency(int pitch) {
     return 440.0f * pow(2.0f, static_cast<float>(pitch - 69) / 12.0f);
@@ -155,7 +155,7 @@ static void generate_sine_samples(void* samples, int count, int channels,
                                   u32 sample_rate, double time,
                                   int pitch, float amplitude) {
     float frequency = pitch_to_frequency(pitch);
-    float theta = F_TAU * frequency;
+    float theta = tau * frequency;
     float* out = static_cast<float*>(samples);
     for (int i = 0; i < count; ++i) {
         for (int j = 0; j < channels; ++j) {
@@ -245,9 +245,9 @@ static int set_buffer_size(snd_pcm_t* pcm_handle,
     return finalize_hw_params(pcm_handle, hw_params_copy, override, frames);
 }
 
-#define TEST_FORMAT_COUNT 5
+static const int test_format_count = 5;
 
-static Format test_formats[TEST_FORMAT_COUNT] = {
+static Format test_formats[test_format_count] = {
     FORMAT_F64,
     FORMAT_F32,
     FORMAT_S32,
@@ -326,7 +326,7 @@ static bool open_device(const char* name, Specification* specification,
 
     Format test_format;
     status = -1;
-    for (int i = 0; status < 0 && i < TEST_FORMAT_COUNT; ++i) {
+    for (int i = 0; status < 0 && i < test_format_count; ++i) {
         test_format = test_formats[i];
         status = 0;
         snd_pcm_format_t pcm_format = get_equivalent_format(test_format);
@@ -449,8 +449,11 @@ struct Stream {
     float* decoded_samples;
     float volume;
     bool looping;
+    bool finished;
     StreamId id;
 };
+
+static const int UNUSED_STREAM_ID = 0;
 
 static Stream::DecoderType decoder_type_from_file_extension(const char* extension) {
          if (strings_match(extension, "wav")) return Stream::DecoderType::Wave;
@@ -462,14 +465,14 @@ static void fill_with_silence(float* samples, u8 silence, u64 count) {
     set_memory(samples, silence, sizeof(float) * count);
 }
 
-#define MAX_STREAMS 16
+static const int max_streams = 16;
 
 struct StreamManager {
-    Stream streams[MAX_STREAMS];
+    Stream streams[max_streams];
     int stream_count;
 };
 
-static int close_stream(StreamManager* manager, int stream_index) {
+static int close_stream(Heap* heap, StreamManager* manager, int stream_index) {
     ASSERT(stream_index >= 0 && stream_index < manager->stream_count);
 
     PROFILE_SCOPED();
@@ -485,8 +488,8 @@ static int close_stream(StreamManager* manager, int stream_index) {
             break;
         }
     }
-    DEALLOCATE(stream->decoded_samples);
-    DEALLOCATE(stream->encoded_samples);
+    heap_deallocate(heap, stream->decoded_samples);
+    heap_deallocate(heap, stream->encoded_samples);
 
     int last = manager->stream_count - 1;
     if (manager->stream_count > 1 && stream_index != last) {
@@ -497,24 +500,35 @@ static int close_stream(StreamManager* manager, int stream_index) {
     return stream_index - 1;
 }
 
-static void close_stream_by_id(StreamManager* manager, StreamId stream_id) {
+static void close_stream_by_id(Heap* heap, StreamManager* manager,
+                               StreamId stream_id) {
     FOR_N (i, manager->stream_count) {
         Stream* stream = manager->streams + i;
         if (stream->id == stream_id) {
-            i = close_stream(manager, i);
+            i = close_stream(heap, manager, i);
         }
     }
 }
 
-static void close_all_streams(StreamManager* manager) {
+static void close_all_streams(Heap* heap, StreamManager* manager) {
     FOR_N (i, manager->stream_count) {
-        i = close_stream(manager, i);
+        i = close_stream(heap, manager, i);
     }
 }
 
-static void open_stream(StreamManager* stream_manager, const char* filename,
-                        u64 samples_to_decode, float volume, bool looping,
-                        StreamId id = 0) {
+static void close_finished_streams(Heap* heap, StreamManager* manager) {
+    FOR_N (i, manager->stream_count) {
+        Stream* stream = manager->streams + i;
+        if (stream->finished) {
+            i = close_stream(heap, manager, i);
+        }
+    }
+}
+
+static void open_stream(StreamManager* stream_manager,
+                        const char* filename, u64 samples_to_decode,
+                        float volume, bool looping, StreamId id,
+                        Heap* heap, Stack* stack) {
 
     ASSERT(stream_manager->stream_count < ARRAY_COUNT(stream_manager->streams));
 
@@ -533,10 +547,10 @@ static void open_stream(StreamManager* stream_manager, const char* filename,
             stb_vorbis* decoder;
             int open_error;
             do {
-                encoded_buffer = heap_reallocate(encoded_buffer,
+                encoded_buffer = heap_reallocate(heap, encoded_buffer,
                                                  encoded_buffer_size);
                 if (!encoded_buffer) {
-                    LOG_ERROR("Could not obtain appropriate memory to load the"
+                    LOG_ERROR("Could not obtain appropriate memory to load the "
                               "Vorbis file %s.", filename);
                     // @Incomplete: nothing actually happens to fail?
                 }
@@ -544,13 +558,14 @@ static void open_stream(StreamManager* stream_manager, const char* filename,
                 stb_vorbis_alloc alloc;
                 alloc.alloc_buffer_length_in_bytes = encoded_buffer_size;
                 alloc.alloc_buffer = static_cast<char*>(encoded_buffer);
-                decoder = stb_vorbis_open_filename(filename, &open_error, &alloc);
+                decoder = stb_vorbis_open_filename(filename, &open_error,
+                                                   &alloc, stack);
                 encoded_buffer_size += KIBIBYTES(16);
             } while(!decoder && open_error == VORBIS_outofmem);
             if (!decoder || open_error) {
                 LOG_ERROR("Vorbis file %s failed to load: %i", filename,
                           open_error);
-                DEALLOCATE(encoded_buffer);
+                heap_deallocate(heap, encoded_buffer);
                 // @Incomplete: nothing actually happens to fail this case?
             }
             stream->vorbis.decoder = decoder;
@@ -564,23 +579,23 @@ static void open_stream(StreamManager* stream_manager, const char* filename,
             WaveDecoder* decoder;
             WaveOpenError open_error = WaveOpenError::None;
             do {
-                encoded_buffer = heap_reallocate(encoded_buffer,
+                encoded_buffer = heap_reallocate(heap, encoded_buffer,
                                                  encoded_buffer_size);
                 if (!encoded_buffer) {
-                    LOG_ERROR("Could not obtain appropriate memory to load the"
-                              "Wave file %s.", filename);
+                    LOG_ERROR("Could not obtain appropriate memory to load "
+                              "the Wave file %s.", filename);
                     // @Incomplete: fail state not handled
                 }
                 open_error = WaveOpenError::None;
                 WaveMemory alloc;
                 alloc.block = encoded_buffer;
                 alloc.block_size = encoded_buffer_size;
-                decoder = wave_open_file(filename, &open_error, &alloc);
+                decoder = wave_open_file(filename, &open_error, &alloc, stack);
                 encoded_buffer_size += KIBIBYTES(16);
             } while(!decoder && open_error == WaveOpenError::Out_Of_Memory);
             if (!decoder || open_error != WaveOpenError::None) {
                 LOG_ERROR("Wave file %s failed to load: %i", filename, open_error);
-                DEALLOCATE(encoded_buffer);
+                heap_deallocate(heap, encoded_buffer);
                 // @Incomplete: nothing actually happens to fail this case?
             }
             stream->wave.decoder = decoder;
@@ -590,9 +605,10 @@ static void open_stream(StreamManager* stream_manager, const char* filename,
         }
     }
 
-    stream->decoded_samples = ALLOCATE(float, samples_to_decode);
+    stream->decoded_samples = ALLOCATE(heap, float, samples_to_decode);
     stream->volume = volume;
     stream->looping = looping;
+    stream->finished = false;
     stream->id = id;
     stream_manager->stream_count += 1;
 }
@@ -603,34 +619,34 @@ static void decode_streams(StreamManager* stream_manager, int frames) {
     FOR_N (i, stream_manager->stream_count) {
         Stream* stream = stream_manager->streams + i;
         int channels = stream->channels;
-        int samples_to_decode = channels * frames;
+        int samples_needed = channels * frames;
         switch (stream->decoder_type) {
             case Stream::DecoderType::Vorbis: {
-                int frames_decoded = stb_vorbis_get_samples_float_interleaved(stream->vorbis.decoder, channels, stream->decoded_samples, samples_to_decode);
+                int frames_decoded = stb_vorbis_get_samples_float_interleaved(stream->vorbis.decoder, channels, stream->decoded_samples, samples_needed);
                 if (frames_decoded < frames) {
+                    samples_needed -= frames_decoded * channels;
+                    float* more_samples = stream->decoded_samples + frames_decoded * channels;
                     if (stream->looping) {
-                        samples_to_decode -= frames_decoded * channels;
                         stb_vorbis_seek_start(stream->vorbis.decoder);
-                        stb_vorbis_get_samples_float_interleaved(stream->vorbis.decoder, channels, stream->decoded_samples, samples_to_decode);
+                        stb_vorbis_get_samples_float_interleaved(stream->vorbis.decoder, channels, more_samples, samples_needed);
                     } else {
-                        int samples_needed = (frames - frames_decoded) * channels;
-                        fill_with_silence(stream->decoded_samples, 0, samples_needed);
-                        i = close_stream(stream_manager, i);
+                        fill_with_silence(more_samples, 0, samples_needed);
+                        stream->finished = true;
                     }
                 }
                 break;
             }
             case Stream::DecoderType::Wave: {
-                int frames_decoded = wave_decode_interleaved(stream->wave.decoder, channels, stream->decoded_samples, samples_to_decode);
+                int frames_decoded = wave_decode_interleaved(stream->wave.decoder, channels, stream->decoded_samples, samples_needed);
                 if (frames_decoded < frames) {
+                    samples_needed -= frames_decoded * channels;
+                    float* more_samples = stream->decoded_samples + frames_decoded * channels;
                     if (stream->looping) {
-                        samples_to_decode -= frames_decoded * channels;
                         wave_seek_start(stream->wave.decoder);
-                        wave_decode_interleaved(stream->wave.decoder, channels, stream->decoded_samples, samples_to_decode);
+                        wave_decode_interleaved(stream->wave.decoder, channels, more_samples, samples_needed);
                     } else {
-                        int samples_needed = (frames - frames_decoded) * channels;
-                        fill_with_silence(stream->decoded_samples, 0, samples_needed);
-                        i = close_stream(stream_manager, i);
+                        fill_with_silence(more_samples, 0, samples_needed);
+                        stream->finished = true;
                     }
                 }
                 break;
@@ -706,10 +722,10 @@ struct Message {
     };
 };
 
-#define MAX_MESSAGES 32
+static const int max_messages = 32;
 
 struct MessageQueue {
-    Message messages[MAX_MESSAGES];
+    Message messages[max_messages];
     AtomicInt head;
     AtomicInt tail;
 };
@@ -720,13 +736,13 @@ static bool was_empty(MessageQueue* queue) {
 
 static bool was_full(MessageQueue* queue) {
     int next_tail = atomic_int_load(&queue->tail);
-    next_tail = (next_tail + 1) % MAX_MESSAGES;
+    next_tail = (next_tail + 1) % max_messages;
     return next_tail == atomic_int_load(&queue->head);
 }
 
 static bool enqueue_message(MessageQueue* queue, Message* message) {
     int current_tail = atomic_int_load(&queue->tail);
-    int next_tail = (current_tail + 1) % MAX_MESSAGES;
+    int next_tail = (current_tail + 1) % max_messages;
     if (next_tail != atomic_int_load(&queue->head)) {
         queue->messages[current_tail] = *message;
         atomic_int_store(&queue->tail, next_tail);
@@ -741,13 +757,17 @@ static bool dequeue_message(MessageQueue* queue, Message* message) {
         return false;
     }
     *message = queue->messages[current_head];
-    atomic_int_store(&queue->head, (current_head + 1) % MAX_MESSAGES);
+    atomic_int_store(&queue->head, (current_head + 1) % max_messages);
     return true;
 }
 
 // System Functions............................................................
 
 namespace {
+    Stack perm_stack;
+    Stack temp_stack;
+    Heap heap;
+    Heap profile_heap;
     StreamManager stream_manager;
     MessageQueue message_queue;
     ConversionInfo conversion_info;
@@ -764,7 +784,21 @@ namespace {
 static void* run_mixer_thread(void* argument) {
     static_cast<void>(argument);
 
-    PROFILE_SCOPED_THREAD();
+    // Obtain the memory needed.
+    {
+        bool good = true;
+        good &= stack_create(&perm_stack, KIBIBYTES(2050));
+        good &= stack_create_on_stack(&temp_stack, &perm_stack, KIBIBYTES(32));
+        good &= heap_create_on_stack(&heap, &perm_stack, KIBIBYTES(2000));
+        good &= heap_create_on_stack(&profile_heap, &perm_stack, KIBIBYTES(16));
+        if (!good) {
+            LOG_ERROR("Failed to obtain enough memory needed to run the audio "
+                      "thread.");
+            // @Incomplete: probably should exit?
+        }
+    }
+
+    PROFILE_THREAD_ENTER(&profile_heap);
 
     specification.channels = 2;
     specification.format = FORMAT_S16;
@@ -773,13 +807,14 @@ static void* run_mixer_thread(void* argument) {
     fill_remaining_specification(&specification);
     if (!open_device("default", &specification, &pcm_handle)) {
         LOG_ERROR("Failed to open audio device.");
+        // @Incomplete: probably should exit?
     }
 
     u64 samples = specification.channels * specification.frames;
 
     // Setup mixing.
-    mixed_samples = ALLOCATE(float, samples);
-    devicebound_samples = ALLOCATE(u8, specification.size);
+    mixed_samples = ALLOCATE(&heap, float, samples);
+    devicebound_samples = ALLOCATE(&heap, u8, specification.size);
     fill_with_silence(mixed_samples, specification.silence, samples);
 
     conversion_info.channels = specification.channels;
@@ -800,18 +835,20 @@ static void* run_mixer_thread(void* argument) {
                     case Message::Code::Play_Once: {
                         open_stream(&stream_manager,
                                     message.play_once.filename, samples,
-                                    message.play_once.volume, false);
+                                    message.play_once.volume, false,
+                                    UNUSED_STREAM_ID, &heap, &temp_stack);
                         break;
                     }
                     case Message::Code::Start_Stream: {
                         open_stream(&stream_manager,
                                     message.start_stream.filename, samples,
                                     message.start_stream.volume, true,
-                                    message.start_stream.stream_id);
+                                    message.start_stream.stream_id, &heap,
+                                    &temp_stack);
                         break;
                     }
                     case Message::Code::Stop_Stream: {
-                        close_stream_by_id(&stream_manager,
+                        close_stream_by_id(&heap, &stream_manager,
                                            message.stop_stream.stream_id);
                         break;
                     }
@@ -861,17 +898,36 @@ static void* run_mixer_thread(void* argument) {
 
         PROFILE_END();
 
+        close_finished_streams(&heap, &stream_manager);
+
         double delta_time = static_cast<double>(specification.frames) /
                             static_cast<double>(specification.sample_rate);
         time += delta_time;
     }
 
-    close_all_streams(&stream_manager);
+    close_all_streams(&heap, &stream_manager);
 
     // Clear up mixer data.
     close_device(pcm_handle);
-    DEALLOCATE(mixed_samples);
-    DEALLOCATE(devicebound_samples);
+    heap_deallocate(&heap, mixed_samples);
+    heap_deallocate(&heap, devicebound_samples);
+
+    PROFILE_THREAD_EXIT();
+
+    // Check the memory usage before finishing.
+    {
+        size_t used, total;
+
+        HeapInfo info = heap_get_info(&heap);
+        ASSERT(info.used_blocks == 0);
+        used = info.used_blocks * sizeof(Heap::Block);
+        total = info.total_blocks * sizeof(Heap::Block);
+        LOG_DEBUG("audio: allocated on heap: %zu/%zu B", used, total);
+    }
+
+    stack_destroy(&perm_stack);
+
+    LOG_DEBUG("Audio thread shut down.");
 
     return nullptr;
 }
@@ -899,7 +955,7 @@ void play_once(const char* filename, float volume) {
 
 static StreamId generate_stream_id() {
     stream_id_seed += 1;
-    if (stream_id_seed == 0) {
+    if (stream_id_seed == UNUSED_STREAM_ID) {
         // Reserve stream ids of 0 for streams that don't need to be
         // identified or referred to outside of the audio system.
         stream_id_seed = 1;

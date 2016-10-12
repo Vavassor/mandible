@@ -44,11 +44,11 @@ static inline void cycle_increment(int* s, int n) {
 
 // this is a noncharacter permanently reserved by the Unicode standard for
 // internal use, here being defined to represent an empty spot in the hash map
-#define INVALID_CODEPOINT U'\U0000FFFF'
+static const char32_t invalid_codepoint = U'\U0000FFFF';
 
 static void character_map_clear(char32_t* map, int map_count) {
     for (int i = 0; i < map_count; ++i) {
-        map[i] = INVALID_CODEPOINT;
+        map[i] = invalid_codepoint;
     }
 }
 
@@ -56,7 +56,7 @@ static int character_map_insert(char32_t* map, int map_count, char32_t value) {
     // Hash to a spot in the map, and if it's not open linearly probe until an
     // open spot is found.
     int probe = hash_codepoint(value, map_count);
-    while (map[probe] != INVALID_CODEPOINT) {
+    while (map[probe] != invalid_codepoint) {
         cycle_increment(&probe, map_count);
     }
     map[probe] = value;
@@ -69,7 +69,7 @@ static int character_map_search(char32_t* map, int map_count, char32_t value) {
     // not in the map.
     int probe = hash_codepoint(value, map_count);
     for (int i = 0; i < map_count; ++i) {
-        if (map[probe] == INVALID_CODEPOINT) {
+        if (map[probe] == invalid_codepoint) {
             break;
         }
         if (map[probe] == value) {
@@ -89,14 +89,14 @@ static int hash_pair(char32_t a, char32_t b, int n) {
 
 static void kerning_table_clear(BmFont::KerningPair* table, int table_count) {
     for (int i = 0; i < table_count; ++i) {
-        table[i].first = INVALID_CODEPOINT;
+        table[i].first = invalid_codepoint;
     }
 }
 
 static int kerning_table_insert(BmFont::KerningPair* table, int table_count,
                                 char32_t a, char32_t b, int amount) {
     int probe = hash_pair(a, b, table_count);
-    while (table[probe].first != INVALID_CODEPOINT) {
+    while (table[probe].first != invalid_codepoint) {
         cycle_increment(&probe, table_count);
     }
     table[probe].first = a;
@@ -109,7 +109,7 @@ static int kerning_table_search(BmFont::KerningPair* table, int table_count,
                                 char32_t a, char32_t b) {
     int probe = hash_pair(a, b, table_count);
     for (int i = 0; i < table_count; ++i) {
-        if (table[probe].first == INVALID_CODEPOINT) {
+        if (table[probe].first == invalid_codepoint) {
             break;
         }
         if (table[probe].first == a && table[probe].second == b) {
@@ -188,14 +188,18 @@ static int get_attribute_size(Reader* reader) {
 
 // BmFont Functions............................................................
 
-bool bm_font_load(BmFont* font, const char* filename) {
+bool bm_font_load(BmFont* font, const char* filename, Heap* heap,
+                  Stack* stack) {
     font->tracking = 0;
+
+    StackHandle font_base = stack->top;
 
     // Fetch the whole .fnt file and copy the contents into memory.
 
     void* data;
     s64 total_bytes;
-    bool loaded = load_whole_file(FileType::Asset_Font, filename, &data, &total_bytes);
+    bool loaded = load_file_to_stack(FileType::Asset_Font, filename,
+                                     &data, &total_bytes, stack);
     if (!loaded) {
         return false;
     }
@@ -216,7 +220,7 @@ bool bm_font_load(BmFont* font, const char* filename) {
     font->scale_vertical = get_integer(&reader, "scaleH");
     int num_pages = get_integer(&reader, "pages");
     if (num_pages > 1) {
-        DEALLOCATE(data);
+        stack_rewind(stack, font_base);
         return false;
     }
     seek_next_line(&reader);
@@ -227,11 +231,11 @@ bool bm_font_load(BmFont* font, const char* filename) {
     seek_to_attribute(&reader, "file");
     int filename_size = get_attribute_size(&reader);
     if (filename_size <= 2) {
-        DEALLOCATE(data);
+        stack_rewind(stack, font_base);
         return false;
     }
     filename_size -= 1;
-    font->image.filename = ALLOCATE(char, filename_size);
+    font->image.filename = ALLOCATE(heap, char, filename_size);
     copy_string(font->image.filename, filename_size, reader.current + 1);
     seek_next_line(&reader);
 
@@ -239,9 +243,9 @@ bool bm_font_load(BmFont* font, const char* filename) {
     seek_in_line(&reader, "chars");
     int num_chars = get_integer(&reader, "count");
     font->num_glyphs = num_chars;
-    font->character_map = ALLOCATE(char32_t, num_chars);
+    font->character_map = ALLOCATE(heap, char32_t, num_chars);
     character_map_clear(font->character_map, num_chars);
-    font->glyphs = ALLOCATE(BmFont::Glyph, num_chars);
+    font->glyphs = ALLOCATE(heap, BmFont::Glyph, num_chars);
     seek_next_line(&reader);
 
     for (int i = 0; i < num_chars; ++i) {
@@ -264,7 +268,7 @@ bool bm_font_load(BmFont* font, const char* filename) {
     seek_in_line(&reader, "kernings");
     int num_kerning_pairs = get_integer(&reader, "count");
     font->num_kerning_pairs = num_kerning_pairs;
-    font->kerning_table = ALLOCATE(BmFont::KerningPair, num_kerning_pairs);
+    font->kerning_table = ALLOCATE(heap, BmFont::KerningPair, num_kerning_pairs);
     kerning_table_clear(font->kerning_table, num_kerning_pairs);
     seek_next_line(&reader);
 
@@ -285,7 +289,7 @@ bool bm_font_load(BmFont* font, const char* filename) {
     // Deallocate the file data and do one last check to see if there were
     // errors before returning that the loading succeeded.
 
-    DEALLOCATE(data);
+    stack_rewind(stack, font_base);
 
     if (reader.read_error) {
         return false;
@@ -294,11 +298,11 @@ bool bm_font_load(BmFont* font, const char* filename) {
     return true;
 }
 
-void bm_font_unload(BmFont* font) {
-    DEALLOCATE(font->kerning_table);
-    DEALLOCATE(font->glyphs);
-    DEALLOCATE(font->character_map);
-    DEALLOCATE(font->image.filename);
+void bm_font_unload(BmFont* font, Heap* heap) {
+    DEALLOCATE(heap, font->kerning_table);
+    DEALLOCATE(heap, font->glyphs);
+    DEALLOCATE(heap, font->character_map);
+    DEALLOCATE(heap, font->image.filename);
 }
 
 // Font usage functions........................................................

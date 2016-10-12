@@ -1,8 +1,8 @@
 #include "asset_handling.h"
 
 #include "logging.h"
-#include "memory.h"
 #include "string_utilities.h"
+#include "memory.h"
 #include "assert.h"
 
 #if defined(__linux__)
@@ -23,6 +23,11 @@
 #include <sys/types.h>
 #include <pwd.h>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
+
+using std::fputs;
+using std::getenv;
 
 #endif // defined(PLATFORM_LINUX)
 
@@ -36,23 +41,23 @@
 // directories for application data as per the XDG Base Directory Specification
 // on Linux and on Windows, the application data and program files directories.
 
-#define APPLICATION_FOLDER "/mandible"
+static const char* application_folder = "/mandible";
 
 enum class BaseType { Assets, Config, Saves };
 
 #if defined(PORTABLE_BUILD)
 
-static char* get_executable_folder(int extra, int* buffer_size);
+static char* get_executable_folder(int extra, int* size, Stack* stack);
 
-static char* get_base_and_extension(BaseType type, int extra, int* size) {
+static char* get_base_and_extension(BaseType type, int extra, int* size, Stack* stack) {
     const char* folder;
     switch (type) {
-        case BaseType::Assets: folder = "/Assets"; break;
-        case BaseType::Config: folder = "/Config"; break;
-        case BaseType::Saves:  folder = "/Saves";  break;
+        case BaseType::Assets: { folder = "/Assets"; break; }
+        case BaseType::Config: { folder = "/Config"; break; }
+        case BaseType::Saves:  { folder = "/Saves";  break; }
     }
     extra += string_size(folder);
-    char* buffer = get_executable_folder(extra, size);
+    char* buffer = get_executable_folder(extra, size, stack);
     if (buffer) {
         append_string(buffer, *size, folder);
     }
@@ -61,12 +66,12 @@ static char* get_base_and_extension(BaseType type, int extra, int* size) {
 
 #else // !defined(PORTABLE_BUILD)
 
-static char* get_base_folder(BaseType type, int extra, int* size);
+static char* get_base_folder(BaseType type, int extra, int* size, Stack* stack);
 
-static char* get_base_and_extension(BaseType type, int extra, int* size) {
-    const char* folder = APPLICATION_FOLDER;
+static char* get_base_and_extension(BaseType type, int extra, int* size, Stack* stack) {
+    const char* folder = application_folder;
     extra += string_size(folder);
-    char* buffer = get_base_folder(type, extra, size);
+    char* buffer = get_base_folder(type, extra, size, stack);
     if (buffer) {
         append_string(buffer, *size, folder);
     }
@@ -75,14 +80,14 @@ static char* get_base_and_extension(BaseType type, int extra, int* size) {
 
 #endif // !defined(PORTABLE_BUILD)
 
-static char* resolve_asset_path(const char* section, const char* path) {
+static char* resolve_asset_path(const char* section, const char* path, Stack* stack) {
     int extra = 1 + string_size(path) + 1;
     if (section) {
         extra += string_size(section) + 1;
     }
     char* buffer;
     int size;
-    buffer = get_base_and_extension(BaseType::Assets, extra, &size);
+    buffer = get_base_and_extension(BaseType::Assets, extra, &size, stack);
     if (!buffer) {
         return nullptr;
     }
@@ -95,11 +100,11 @@ static char* resolve_asset_path(const char* section, const char* path) {
     return buffer;
 }
 
-static char* resolve_config_path(const char* path) {
+static char* resolve_config_path(const char* path, Stack* stack) {
     int extra = 1 + string_size(path) + 1;
     char* buffer;
     int size;
-    buffer = buffer = get_base_and_extension(BaseType::Config, extra, &size);
+    buffer = get_base_and_extension(BaseType::Config, extra, &size, stack);
     if (!buffer) {
         return nullptr;
     }
@@ -108,11 +113,11 @@ static char* resolve_config_path(const char* path) {
     return buffer;
 }
 
-static char* resolve_saved_game_path(const char* path) {
+static char* resolve_saved_game_path(const char* path, Stack* stack) {
     int extra = 1 + string_size(path) + 1;
     char* buffer;
     int size;
-    buffer = buffer = get_base_and_extension(BaseType::Saves, extra, &size);
+    buffer = get_base_and_extension(BaseType::Saves, extra, &size, stack);
     if (!buffer) {
         return nullptr;
     }
@@ -270,7 +275,6 @@ static HANDLE open_file(const char* path, OpenMode open_mode) {
     int wide_count = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
     if (wide_count == 0) {
         LOG_ERROR("The file path %s could not be converted to wide characters.", path);
-        log_thread_error();
         return INVALID_HANDLE_VALUE;
     }
     ASSERT(wide_count > 0);
@@ -459,10 +463,10 @@ static char* find_last_char(const char* s, char c) {
     return result;
 }
 
-static char* get_executable_folder(int extra, int* size) {
+static char* get_executable_folder(int extra, int* size, Stack* stack) {
     ASSERT(size);
     int buffer_size = 1024;
-    char* buffer = ALLOCATE(char, buffer_size + extra);
+    char* buffer = STACK_ALLOCATE(stack, char, buffer_size + extra, nullptr);
     if (!buffer) {
         return nullptr;
     }
@@ -470,14 +474,13 @@ static char* get_executable_folder(int extra, int* size) {
     for (;;) {
         bytes = readlink("/proc/self/exe", buffer, buffer_size - 1);
         if (bytes < 0) {
-            DEALLOCATE(buffer);
             return nullptr;
         }
         if (bytes < buffer_size - 1) {
             break;
         }
         buffer_size *= 2;
-        buffer = static_cast<char*>(heap_reallocate(buffer, buffer_size + extra));
+        buffer = STACK_REALLOCATE(stack, char, buffer_size + extra, nullptr);
         if (!buffer) {
             return nullptr;
         }
@@ -491,13 +494,13 @@ static char* get_executable_folder(int extra, int* size) {
 
 #else // !defined(PORTABLE_BUILD)
 
-static char* get_xdg_base_folder(const char* env, const char* xdg_default_place, int extra, int* size) {
+static char* get_xdg_base_folder(const char* env, const char* xdg_default_place, int extra, int* size, Stack* stack) {
     char* buffer;
     int buffer_size = extra;
     const char* env_folder = getenv(env);
     if (env_folder && *env_folder) {
         buffer_size += string_size(env_folder);
-        buffer = ALLOCATE(char, buffer_size);
+        buffer = STACK_ALLOCATE(stack, char, buffer_size, nullptr);
         if (!buffer) {
             return nullptr;
         }
@@ -511,9 +514,10 @@ static char* get_xdg_base_folder(const char* env, const char* xdg_default_place,
             word_size = 1024;
         }
         char* word_storage = nullptr;
+        StackHandle storage_base;
         passwd word;
         if (!home_folder) {
-            word_storage = ALLOCATE(char, word_size);
+            word_storage = STACK_ALLOCATE(stack, char, word_size, &storage_base);
             if (!word_storage) {
                 return nullptr;
             }
@@ -522,32 +526,37 @@ static char* get_xdg_base_folder(const char* env, const char* xdg_default_place,
             if (result == 0) {
                 home_folder = pw->pw_dir;
             } else {
-                DEALLOCATE(word_storage);
+                stack_rewind(stack, storage_base);
                 return nullptr;
             }
         }
         buffer_size += string_size(home_folder) + string_size(xdg_default_place);
-        buffer = ALLOCATE(char, buffer_size);
+        StackHandle buffer_base;
+        buffer = STACK_ALLOCATE(stack, char, buffer_size, &buffer_base);
         if (!buffer) {
-            SAFE_DEALLOCATE(word_storage);
+            if (word_storage) {
+                stack_rewind(stack, storage_base);
+            }
             return nullptr;
         }
         copy_string(buffer, buffer_size, home_folder);
         append_string(buffer, buffer_size, xdg_default_place);
-        SAFE_DEALLOCATE(word_storage);
+        if (word_storage) {
+            stack_rewind(stack, storage_base);
+        }
     }
     *size = buffer_size;
     return buffer;
 }
 
-static char* get_base_folder(BaseType type, int extra, int* size) {
+static char* get_base_folder(BaseType type, int extra, int* size, Stack* stack) {
     char* buffer;
     int buffer_size = extra;
     switch (type) {
         case BaseType::Assets: {
             const char* usr_share = "/usr/share";
             buffer_size += string_size(usr_share);
-            buffer = ALLOCATE(char, buffer_size);
+            buffer = STACK_ALLOCATE(stack, char, buffer_size, nullptr);
             if (!buffer) {
                 return nullptr;
             }
@@ -555,11 +564,11 @@ static char* get_base_folder(BaseType type, int extra, int* size) {
             break;
         }
         case BaseType::Config: {
-            buffer = get_xdg_base_folder("XDG_CONFIG_HOME", "/.config", extra, &buffer_size);
+            buffer = get_xdg_base_folder("XDG_CONFIG_HOME", "/.config", extra, &buffer_size, stack);
             break;
         }
         case BaseType::Saves: {
-            buffer = get_xdg_base_folder("XDG_DATA_HOME", "/.local/share", extra, &buffer_size);
+            buffer = get_xdg_base_folder("XDG_DATA_HOME", "/.local/share", extra, &buffer_size, stack);
             break;
         }
     }
@@ -584,18 +593,9 @@ enum class OpenMode { Read, Write, Append };
 static int open_file(const char* path, OpenMode open_mode) {
     int flags;
     switch (open_mode) {
-        case OpenMode::Read: {
-            flags = O_RDONLY;
-            break;
-        }
-        case OpenMode::Write: {
-            flags = O_WRONLY | O_CREAT | O_TRUNC;
-            break;
-        }
-        case OpenMode::Append: {
-            flags = O_WRONLY | O_CREAT | O_APPEND;
-            break;
-        }
+        case OpenMode::Read:   { flags = O_RDONLY;                      break; }
+        case OpenMode::Write:  { flags = O_WRONLY | O_CREAT | O_TRUNC;  break; }
+        case OpenMode::Append: { flags = O_WRONLY | O_CREAT | O_APPEND; break; }
     }
     mode_t mode = S_IRUSR | S_IRGRP | S_IROTH
                 | S_IWUSR | S_IWGRP | S_IWOTH;
@@ -606,40 +606,66 @@ static int open_file(const char* path, OpenMode open_mode) {
     return file;
 }
 
-static int open_file_by_type(FileType type, const char* path, OpenMode open_mode) {
+static int open_file_by_type(FileType type, const char* path, OpenMode open_mode, Stack* stack) {
+    StackHandle handle = stack->top;
     char* full_path;
     switch (type) {
         default: {
-            full_path = resolve_asset_path(nullptr, path);
+            full_path = resolve_asset_path(nullptr, path, stack);
             break;
         }
         case FileType::Asset_Shader: {
-            full_path = resolve_asset_path("Shaders", path);
+            full_path = resolve_asset_path("/Shaders", path, stack);
             break;
         }
         case FileType::Config: {
-            full_path = resolve_config_path(path);
+            full_path = resolve_config_path(path, stack);
             break;
         }
         case FileType::Saved_Game: {
-            full_path = resolve_saved_game_path(path);
+            full_path = resolve_saved_game_path(path, stack);
             break;
         }
     }
     if (!full_path) {
         LOG_ERROR("The file name %s could not be resolved to a full path.", path);
+        stack_rewind(stack, handle);
         return -1;
     }
     int file = open_file(full_path, open_mode);
-    DEALLOCATE(full_path);
+    stack_rewind(stack, handle);
     return file;
 }
 
-bool load_whole_file(FileType type, const char* path, void** data, s64* size) {
+static bool read_to_memory(int file, const char* path, void* memory, s64 byte_count) {
+    if (!memory) {
+        LOG_ERROR("The memory needed to store the file %s could not be allocated.", path);
+        close_file(file, path);
+        return false;
+    }
+    ssize_t bytes_read = read(file, memory, byte_count);
+    static_cast<u8*>(memory)[byte_count] = 0; // null-terminate whether it needs to be or not
+    int read_error = errno;
+    bool closed = close_file(file, path);
+    if (!closed) {
+        return false;
+    }
+    if (bytes_read == -1) {
+        LOG_ERROR("The file %s could not be read. %s", path, strerror(read_error));
+        return false;
+    } else if (bytes_read < byte_count) {
+        LOG_ERROR("The file %s was only partially read.", path);
+        return false;
+    }
+    ASSERT(bytes_read > 0 && bytes_read <= byte_count);
+    return true;
+}
+
+bool load_whole_file(FileType type, const char* path, void** data, s64* size, Heap* heap, Stack* stack) {
     ASSERT(path);
     ASSERT(data);
     ASSERT(size);
-    int file = open_file_by_type(type, path, OpenMode::Read);
+    int file = open_file_by_type(type, path, OpenMode::Read, stack);
     if (file == -1) {
         return false;
     }
@@ -651,39 +677,21 @@ bool load_whole_file(FileType type, const char* path, void** data, s64* size) {
         return false;
     }
     s64 byte_count = status.st_size;
-    void* memory = ALLOCATE(u8, byte_count + 1);
-    if (!memory) {
-        LOG_ERROR("The memory needed to store the file %s could not be allocated.", path);
-        close_file(file, path);
+    void* memory = ALLOCATE(heap, u8, byte_count + 1);
+    bool read = read_to_memory(file, path, memory, byte_count);
+    if (!read) {
+        heap_deallocate(heap, memory);
         return false;
     }
-    ssize_t bytes_read = read(file, memory, byte_count);
-    static_cast<u8*>(memory)[byte_count] = 0; // null-terminate whether it needs to be or not
-    int read_error = errno;
-    bool closed = close_file(file, path);
-    if (!closed) {
-        DEALLOCATE(memory);
-        return false;
-    }
-    if (bytes_read == -1) {
-        LOG_ERROR("The file %s could not be read. %s", path, strerror(read_error));
-        DEALLOCATE(memory);
-        return false;
-    } else if (bytes_read < byte_count) {
-        LOG_ERROR("The file %s was only partially read.", path);
-        DEALLOCATE(memory);
-        return false;
-    }
-    ASSERT(bytes_read > 0 && bytes_read <= byte_count);
     *size = byte_count;
     *data = memory;
     return true;
 }
 
-bool save_whole_file(FileType type, const char* path, const void* data, s64 size) {
+bool save_whole_file(FileType type, const char* path, const void* data, s64 size, Stack* stack) {
     ASSERT(path);
     ASSERT(data);
-    int file = open_file_by_type(type, path, OpenMode::Write);
+    int file = open_file_by_type(type, path, OpenMode::Write, stack);
     if (file == -1) {
         return false;
     }
@@ -701,8 +709,37 @@ bool save_whole_file(FileType type, const char* path, const void* data, s64 size
     return closed;
 }
 
-void delete_config_file_if_too_large(const char* path, int limit) {
-    char* full_path = resolve_config_path(path);
+bool load_file_to_stack(FileType type, const char* path, void** data, s64* size, Stack* stack) {
+    ASSERT(path);
+    ASSERT(data);
+    ASSERT(size);
+    int file = open_file_by_type(type, path, OpenMode::Read, stack);
+    if (file == -1) {
+        return false;
+    }
+    struct stat status;
+    int status_obtained = fstat(file, &status);
+    if (status_obtained == -1) {
+        LOG_ERROR("The size of the file %s could not be determined. %s", path, strerror(errno));
+        close_file(file, path);
+        return false;
+    }
+    s64 byte_count = status.st_size;
+    StackHandle handle;
+    void* memory = STACK_ALLOCATE(stack, u8, byte_count + 1, &handle);
+    bool read = read_to_memory(file, path, memory, byte_count);
+    if (!read) {
+        stack_rewind(stack, handle);
+        return false;
+    }
+    *size = byte_count;
+    *data = memory;
+    return true;
+}
+
+void delete_config_file_if_too_large(const char* path, int limit, Stack* stack) {
+    StackHandle handle = stack->top;
+    char* full_path = resolve_config_path(path, stack);
     if (!full_path) {
         LOG_ERROR("The file name %s could not be resolved to a full path.", path);
         return;
@@ -717,26 +754,16 @@ void delete_config_file_if_too_large(const char* path, int limit) {
             LOG_ERROR("The file %s was not removed as requested.", full_path);
         }
     }
-    DEALLOCATE(full_path);
+    stack_rewind(stack, handle);
 }
 
-struct File {
-    char* path;
-    int handle;
-    FileMode mode;
-};
-
-File* open_file(FileType type, FileMode mode, const char* path) {
+bool open_file(File* file, FileType type, FileMode mode, const char* path, Stack* stack) {
+    ASSERT(file);
     ASSERT(path);
     if (mode == FileMode::Write) {
         ASSERT(type == FileType::Config || type == FileType::Saved_Game);
     } else if (mode == FileMode::Read) {
         ASSERT(!(type == FileType::Config || type == FileType::Saved_Game));
-    }
-    File* file = ALLOCATE(File, 1);
-    if (!file) {
-        LOG_ERROR("The memory needed to store data for file %s could not be allocated.", path);
-        return nullptr;
     }
     file->mode = mode;
     OpenMode open_mode;
@@ -744,35 +771,32 @@ File* open_file(FileType type, FileMode mode, const char* path) {
         case FileMode::Read:  { open_mode = OpenMode::Read;   break; }
         case FileMode::Write: { open_mode = OpenMode::Append; break; }
     }
-    int handle = open_file_by_type(type, path, open_mode);
+    int handle = open_file_by_type(type, path, open_mode, stack);
     if (handle == -1) {
         close_file(file);
-        return nullptr;
+        return false;
     }
     file->handle = handle;
-    int path_size = string_size(path);
-    char* path_copy = ALLOCATE(char, path_size);
-    if (!path_copy) {
-        LOG_ERROR("The memory needed to store the path of file %s could not be allocated.", path);
+    int path_copied = copy_string(file->path, file_path_max, path);
+    if (path_copied != string_size(path)) {
+        LOG_ERROR("The local path for the file %s larger than the maximum allowed (%i bytes).", path, file_path_max);
         close_file(file);
-        return nullptr;
+        return false;
     }
-    file->path = path_copy;
-    copy_string(file->path, path_size, path);
-    return file;
+    file->open = true;
+    return true;
 }
 
 void close_file(File* file) {
-    if (file) {
-        close_file(file->handle, file->path);
-        SAFE_DEALLOCATE(file->path);
-        DEALLOCATE(file);
-    }
+    ASSERT(file);
+    close_file(file->handle, file->path);
+    file->open = false;
 }
 
 bool write_file(File* file, const void* data, s64 size) {
     ASSERT(file);
-    ASSERT(file->handle);
+    ASSERT(file->handle >= 0);
+    ASSERT(file->open);
     ASSERT(data);
     ASSERT(file->mode == FileMode::Write);
     ssize_t written = write(file->handle, data, size);
@@ -789,7 +813,8 @@ bool write_file(File* file, const void* data, s64 size) {
 
 s64 read_file(File* file, void* data, s64 size) {
     ASSERT(file);
-    ASSERT(file->handle);
+    ASSERT(file->handle >= 0);
+    ASSERT(file->open);
     ASSERT(data);
     ASSERT(file->mode == FileMode::Read);
     ssize_t bytes_read = read(file->handle, data, size);
@@ -802,7 +827,8 @@ s64 read_file(File* file, void* data, s64 size) {
 
 s64 seek_file(File* file, s64 offset) {
     ASSERT(file);
-    ASSERT(file->handle);
+    ASSERT(file->handle >= 0);
+    ASSERT(file->open);
     ASSERT(offset >= 0);
     s64 seeked_to = lseek64(file->handle, offset, SEEK_SET);
     ASSERT(seeked_to != -1);
@@ -811,19 +837,31 @@ s64 seek_file(File* file, s64 offset) {
 
 s64 seek_file_forward(File* file, s64 offset) {
     ASSERT(file);
-    ASSERT(file->handle);
+    ASSERT(file->handle >= 0);
+    ASSERT(file->open);
     s64 seeked_to = lseek64(file->handle, offset, SEEK_CUR);
+    ASSERT(seeked_to != -1);
+    return seeked_to;
+}
+
+s64 seek_file_from_end(File* file, s64 offset) {
+    ASSERT(file);
+    ASSERT(file->handle >= 0);
+    ASSERT(file->open);
+    s64 seeked_to = lseek64(file->handle, offset, SEEK_END);
     ASSERT(seeked_to != -1);
     return seeked_to;
 }
 
 s64 get_file_size(File* file) {
     ASSERT(file);
-    ASSERT(file->handle);
+    ASSERT(file->handle >= 0);
+    ASSERT(file->open);
     struct stat status;
     int got_status = fstat(file->handle, &status);
     ASSERT(got_status != -1);
     if (got_status == -1) {
+        LOG_ERROR("The size of the file %s could not be determined. %s", file->path, strerror(errno));
         return 0;
     }
     return status.st_size;
@@ -831,7 +869,8 @@ s64 get_file_size(File* file) {
 
 s64 get_file_offset(File* file) {
     ASSERT(file);
-    ASSERT(file->handle);
+    ASSERT(file->handle >= 0);
+    ASSERT(file->open);
     s64 seeked_to = lseek64(file->handle, 0, SEEK_CUR);
     ASSERT(seeked_to != -1);
     return seeked_to;
@@ -843,6 +882,24 @@ void print(const char* string, bool is_error) {
     } else {
         fputs(string, stdout);
     }
+}
+
+void report_error_in_a_popup(const char* message, bool include_log_reminder) {
+    const char* reminder;
+    if (include_log_reminder) {
+        reminder = "\n\nCheck the log for more specifics.";
+    } else {
+        reminder = "";
+    }
+
+    const int command_max = 256;
+    char command[command_max];
+    snprintf(command, command_max, "zenity --error --text=\"mandible "
+             "encountered an error it was not able to recover from.\n\n%s%s\"",
+             message, reminder);
+
+    int result = system(command);
+    static_cast<void>(result);
 }
 
 #endif // defined(PLATFORM_LINUX)

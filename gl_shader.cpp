@@ -38,7 +38,7 @@ void main()
 }
 )";
 
-static GLuint load_shader_from_source(GLenum type, const char* source, GLint source_size) {
+static GLuint load_shader_from_source(GLenum type, const char* source, GLint source_size, Stack* stack) {
     GLuint shader = glCreateShader(type);
     glShaderSource(shader, 1, &source, &source_size);
     glCompileShader(shader);
@@ -51,11 +51,11 @@ static GLuint load_shader_from_source(GLenum type, const char* source, GLint sou
         GLint info_log_size = 0;
         glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &info_log_size);
         if (info_log_size > 0) {
-            GLchar* info_log = ALLOCATE(GLchar, info_log_size);
+            GLchar* info_log;
+            SCOPED_ALLOCATE(stack, &info_log, GLchar, info_log_size);
             GLsizei bytes_written = 0;
             glGetShaderInfoLog(shader, info_log_size, &bytes_written, info_log);
             LOG_ERROR("Couldn't compile the shader.\n%s", info_log);
-            DEALLOCATE(info_log);
         }
 
         glDeleteShader(shader);
@@ -66,14 +66,15 @@ static GLuint load_shader_from_source(GLenum type, const char* source, GLint sou
     return shader;
 }
 
-static GLuint load_shader_from_file(GLenum type, const char* path) {
+static GLuint load_shader_from_file(GLenum type, const char* path, Stack* stack) {
     GLuint shader;
 
     // Load the shader source code from a file.
 
+    StackHandle file_base = stack->top;
     s64 char_count;
     void* chars;
-    bool loaded = load_whole_file(FileType::Asset_Shader, path, &chars, &char_count);
+    bool loaded = load_file_to_stack(FileType::Asset_Shader, path, &chars, &char_count, stack);
     if (!loaded) {
         LOG_ERROR("Couldn't load the shader source file.");
         return 0;
@@ -82,20 +83,20 @@ static GLuint load_shader_from_file(GLenum type, const char* path) {
     GLchar* shader_source = static_cast<GLchar*>(chars);
     GLint shader_source_size = char_count;
 
-    shader = load_shader_from_source(type, shader_source, shader_source_size);
-    DEALLOCATE(shader_source);
+    shader = load_shader_from_source(type, shader_source, shader_source_size, stack);
+    stack_rewind(stack, file_base);
 
     return shader;
 }
 
-GLuint load_shader_program(const char* vertex_file, const char* fragment_file) {
+GLuint load_shader_program(const char* vertex_file, const char* fragment_file, Stack* stack) {
     GLuint program;
 
     GLuint vertex_shader;
     if (vertex_file) {
-        vertex_shader = load_shader_from_file(GL_VERTEX_SHADER, vertex_file);
+        vertex_shader = load_shader_from_file(GL_VERTEX_SHADER, vertex_file, stack);
     } else {
-        vertex_shader = load_shader_from_source(GL_VERTEX_SHADER, default_vertex_source, string_size(default_vertex_source));
+        vertex_shader = load_shader_from_source(GL_VERTEX_SHADER, default_vertex_source, string_size(default_vertex_source), stack);
     }
     if (vertex_shader == 0) {
         LOG_ERROR("Failed to load the vertex shader %s.", vertex_file);
@@ -104,9 +105,9 @@ GLuint load_shader_program(const char* vertex_file, const char* fragment_file) {
 
     GLuint fragment_shader;
     if (fragment_file) {
-        fragment_shader = load_shader_from_file(GL_FRAGMENT_SHADER, fragment_file);
+        fragment_shader = load_shader_from_file(GL_FRAGMENT_SHADER, fragment_file, stack);
     } else {
-        fragment_shader = load_shader_from_source(GL_FRAGMENT_SHADER, default_fragment_source, string_size(default_fragment_source));
+        fragment_shader = load_shader_from_source(GL_FRAGMENT_SHADER, default_fragment_source, string_size(default_fragment_source), stack);
     }
     if (fragment_shader == 0) {
         LOG_ERROR("Failed to load the fragment shader %s.", fragment_file);
@@ -129,11 +130,11 @@ GLuint load_shader_program(const char* vertex_file, const char* fragment_file) {
         int info_log_size = 0;
         glGetProgramiv(program, GL_INFO_LOG_LENGTH, &info_log_size);
         if (info_log_size > 0) {
-            GLchar* info_log = ALLOCATE(GLchar, info_log_size);
+            GLchar* info_log;
+            SCOPED_ALLOCATE(stack, &info_log, GLchar, info_log_size);
             GLsizei bytes_written = 0;
             glGetProgramInfoLog(program, info_log_size, &bytes_written, info_log);
             LOG_ERROR("Couldn't link the shader program (%s, %s).\n%s", vertex_file, fragment_file, info_log);
-            DEALLOCATE(info_log);
         }
 
         glDeleteProgram(program);

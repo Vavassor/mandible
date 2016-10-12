@@ -22,12 +22,9 @@
 #define PROFILE_SCOPED()           profile::ScopedBlock PROFILE_MACRO_PASTE(profile_scoped_, __LINE__)(PROFILE_FUNCTION_NAME)
 #define PROFILE_SCOPED_NAMED(name) profile::ScopedBlock PROFILE_MACRO_PASTE(profile_scoped_, __LINE__)(name)
 
-#define PROFILE_THREAD_ENTER()           profile::enter_thread(PROFILE_FUNCTION_NAME)
-#define PROFILE_THREAD_ENTER_NAMED(name) profile::enter_thread(name)
-#define PROFILE_THREAD_EXIT()            profile::exit_thread()
-
-#define PROFILE_SCOPED_THREAD()           profile::ScopedThread PROFILE_MACRO_PASTE(profile_scoped_thread_, __LINE__)(PROFILE_FUNCTION_NAME)
-#define PROFILE_SCOPED_THREAD_NAMED(name) profile::ScopedThread PROFILE_MACRO_PASTE(profile_scoped_thread_, __LINE__)(name)
+#define PROFILE_THREAD_ENTER(heap)             profile::enter_thread(heap, PROFILE_FUNCTION_NAME)
+#define PROFILE_THREAD_ENTER_NAMED(heap, name) profile::enter_thread(heap, name)
+#define PROFILE_THREAD_EXIT()                  profile::exit_thread()
 
 #else
 
@@ -38,14 +35,13 @@
 #define PROFILE_SCOPED()
 #define PROFILE_SCOPED_NAMED(name)
 
-#define PROFILE_THREAD_ENTER()
-#define PROFILE_THREAD_ENTER_NAMED(name)
+#define PROFILE_THREAD_ENTER(heap)
+#define PROFILE_THREAD_ENTER_NAMED(heap, name)
 #define PROFILE_THREAD_EXIT()
 
-#define PROFILE_SCOPED_THREAD()
-#define PROFILE_SCOPED_THREAD_NAMED(name)
-
 #endif
+
+struct Heap;
 
 namespace profile {
 
@@ -53,7 +49,7 @@ void begin_period(const char* name);
 void end_period();
 void pause_period();
 void unpause_period();
-void enter_thread(const char* name);
+void enter_thread(Heap* heap, const char* name);
 void exit_thread();
 void dump_print();
 void reset_all();
@@ -62,11 +58,6 @@ void cleanup();
 struct ScopedBlock {
     ScopedBlock(const char* name) { PROFILE_BEGIN_NAMED(name); }
     ~ScopedBlock() { PROFILE_END(); }
-};
-
-struct ScopedThread {
-    ScopedThread(const char* name) { PROFILE_THREAD_ENTER_NAMED(name); }
-    ~ScopedThread() { PROFILE_THREAD_EXIT(); }
 };
 
 } // namespace profile

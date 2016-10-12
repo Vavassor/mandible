@@ -7,17 +7,17 @@
 #include <pthread.h>
 
 #include <cstdarg>
+#include <cstdio>
 
 using std::vsnprintf;
 
 namespace logging {
 
-#define LOG_FILE_NAME "/mandible.log"
-#define MAX_LOG_SIZE  32768
-
 namespace {
+    const char* log_file_name = "mandible.log";
+    const int max_log_size = 32768;
     pthread_mutex_t mutex;
-    File* file;
+    File file;
 }
 
 static void lock() {
@@ -47,13 +47,14 @@ static void log_session_ended_marker() {
     LOG_INFO("\nSession Ended. %s\n", time_text);
 }
 
-bool startup() {
+bool startup(Stack* stack) {
+    bool result;
+
     pthread_mutex_init(&mutex, nullptr);
 
     lock();
-    delete_config_file_if_too_large(LOG_FILE_NAME, MAX_LOG_SIZE);
-    file = open_file(FileType::Config, FileMode::Write, LOG_FILE_NAME);
-    bool result = file;
+    delete_config_file_if_too_large(log_file_name, max_log_size, stack);
+    result = open_file(&file, FileType::Config, FileMode::Write, log_file_name, stack);
     unlock();
 
     log_session_started_marker();
@@ -64,7 +65,7 @@ bool startup() {
 void shutdown() {
     log_session_ended_marker();
     lock();
-    close_file(file);
+    close_file(&file);
     unlock();
     pthread_mutex_destroy(&mutex);
 }
@@ -80,11 +81,11 @@ void add_message(Level level, const char* format, ...) {
         message[written] = '\n';
         message[written + 1] = '\0';
         print(message, level == Level::Error);
-        if (file) {
-            lock();
-            write_file(file, message, written + 1);
-            unlock();
+        lock();
+        if (file.open) {
+            write_file(&file, message, written + 1);
         }
+        unlock();
     }
 }
 

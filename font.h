@@ -29,8 +29,11 @@ struct BmFont {
     int scale_horizontal, scale_vertical;
 };
 
-bool bm_font_load(BmFont* font, const char* filename);
-void bm_font_unload(BmFont* font);
+struct Stack;
+struct Heap;
+
+bool bm_font_load(BmFont* font, const char* filename, Heap* heap, Stack* stack);
+void bm_font_unload(BmFont* font, Heap* heap);
 
 BmFont::Glyph* bm_font_get_character_mapping(BmFont* font, char32_t c);
 int bm_font_get_kerning(BmFont* font, char32_t first, char32_t second);

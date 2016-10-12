@@ -1,8 +1,11 @@
 #pragma once
 
 #include "sized_types.h"
+#include "memory.h"
 
 struct ByteBuffer {
+    Stack* stack;
+    StackHandle handle;
     void* data;
     s64 position;
     s64 end;

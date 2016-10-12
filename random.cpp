@@ -6,16 +6,16 @@ namespace random {
 namespace lcg {
 
 namespace {
-    unsigned long current_seed = 0;
+    u32 current_seed = 0;
 }
 
-static unsigned long seed(unsigned long next) {
-    unsigned long previous = current_seed;
+static u32 seed(u32 next) {
+    u32 previous = current_seed;
     current_seed = next;
     return previous;
 }
 
-static unsigned long generate() {
+static u32 generate() {
     // BCPL generator
     current_seed = current_seed * 2147001325 + 715136305;
     // Shuffle non-random bits to the middle, and xor to decorrelate with seed.
@@ -28,48 +28,48 @@ static unsigned long generate() {
 // adapted from a public domain implementation by Michael Brundage
 namespace mt {
 
-#define BUFFER_LENGTH 624
-#define IA            379
-#define IB            (BUFFER_LENGTH - IA)
-#define TWIST(b,i,j)  ((b)[i] & 0x80000000ul) | ((b)[j] & 0x7FFFFFFFul)
-#define MAGIC(s)      (((s) & 1) * 0x9908B0DFul)
+#define TWIST(b,i,j) ((b)[i] & 0x80000000ul) | ((b)[j] & 0x7FFFFFFFul)
+#define MAGIC(s)     (((s) & 1) * 0x9908B0DFul)
 
 namespace {
-    unsigned long buffer[BUFFER_LENGTH];
-    int index = BUFFER_LENGTH + 1;
+    const int buffer_length = 624;
+    const int IA            = 379;
+    const int IB            = buffer_length - IA;
+    u32 buffer[buffer_length];
+    int index = buffer_length + 1;
 }
 
-static void seed(unsigned long next) {
-    unsigned long previous = lcg::seed(next);
-    for (int i = 0; i < BUFFER_LENGTH; ++i) {
+static void seed(u32 next) {
+    u32 previous = lcg::seed(next);
+    for (int i = 0; i < buffer_length; ++i) {
         buffer[i] = lcg::generate();
     }
     lcg::seed(previous);
-    index = BUFFER_LENGTH;
+    index = buffer_length;
 }
 
-static unsigned long generate() {
+static u32 generate() {
     // a random number to be generated on the interval [0,0xffffffff]
-    unsigned long r;
+    u32 r;
 
     // Generate a whole buffer-full of numbers at a time.
-    if (index >= BUFFER_LENGTH) {
-        if (index > BUFFER_LENGTH) {
+    if (index >= buffer_length) {
+        if (index > buffer_length) {
             seed(0ul);
         }
 
-        unsigned long s;
+        u32 s;
         int i;
         for (i = 0; i < IB; ++i) {
             s = TWIST(buffer, i, i + 1);
             buffer[i] = buffer[i + IA] ^ (s >> 1) ^ MAGIC(s);
         }
-        for (; i < BUFFER_LENGTH - 1; ++i) {
+        for (; i < buffer_length - 1; ++i) {
             s = TWIST(buffer, i, i + 1);
             buffer[i] = buffer[i - IB] ^ (s >> 1) ^ MAGIC(s);
         }
-        s = TWIST(buffer, BUFFER_LENGTH - 1, 0);
-        buffer[BUFFER_LENGTH - 1] = buffer[IA - 1] ^ (s >> 1) ^ MAGIC(s);
+        s = TWIST(buffer, buffer_length - 1, 0);
+        buffer[buffer_length - 1] = buffer[IA - 1] ^ (s >> 1) ^ MAGIC(s);
 
         index = 0;
     }
@@ -87,16 +87,16 @@ static unsigned long generate() {
 
 } // namespace mt
 
-void seed(unsigned long next) {
+void seed(u32 next) {
     mt::seed(next);
 }
 
-unsigned long generate() {
+u32 generate() {
     return mt::generate();
 }
 
 int int_range(int min, int max) {
-    return min + static_cast<int>(generate() % static_cast<unsigned long>(max - min + 1));
+    return min + static_cast<int>(generate() % static_cast<u32>(max - min + 1));
 }
 
 float float_range(float min, float max) {

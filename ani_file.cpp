@@ -69,15 +69,16 @@ enum ChunkType {
     CHUNK_TYPE_NAME     = 0x454D414E, // NAME
 };
 
-#define ANI_SIGNATURE 0x444E414DF0494E41ull // ANIðMAND in ASCII, byte-reversed
-
 namespace {
     const u16 basic_frame_size = 7 * sizeof(u16);
+    const u64 ani_signature = 0x444E414DF0494E41ull; // ANIðMAND in ASCII, byte-reversed
 }
 
-bool load_asset(Asset* asset, const char* filename) {
+bool load_asset(Asset* asset, const char* filename, Heap* heap, Stack* stack) {
     ByteBuffer buffer = {};
-    bool loaded = load_whole_file(FileType::Asset_Animation, filename, &buffer.data, &buffer.end);
+    buffer.stack = stack;
+    bool loaded = load_file_to_stack(FileType::Asset_Animation, filename,
+                                     &buffer.data, &buffer.end, stack);
     if (!loaded) {
         LOG_ERROR("Failed to open file %s.", filename);
         return false;
@@ -86,7 +87,7 @@ bool load_asset(Asset* asset, const char* filename) {
     u64 signature = extract64(&buffer);
     u16 version = extract16(&buffer);
 
-    if (signature != ANI_SIGNATURE) {
+    if (signature != ani_signature) {
         LOG_ERROR("The file signature was not the type expected; instead it "
                   "was 0x%" PRIx64 ".", signature);
         goto error;
@@ -105,7 +106,7 @@ bool load_asset(Asset* asset, const char* filename) {
         switch (chunk_type) {
             case CHUNK_TYPE_SEQUENCE: {
                 asset->sequences_count = extract16(&buffer);
-                asset->sequences = ALLOCATE(Sequence, asset->sequences_count);
+                asset->sequences = ALLOCATE(heap, Sequence, asset->sequences_count);
                 if (!asset->sequences) {
                     LOG_ERROR("Failed to allocate the memory needed for "
                               "storing the frame sequences.");
@@ -115,7 +116,7 @@ bool load_asset(Asset* asset, const char* filename) {
                 for (int i = 0; i < asset->sequences_count; ++i) {
                     Sequence* sequence = asset->sequences + i;
                     sequence->frames_count = extract16(&buffer);
-                    sequence->frames = ALLOCATE(Frame, sequence->frames_count);
+                    sequence->frames = ALLOCATE(heap, Frame, sequence->frames_count);
                     if (!sequence->frames) {
                         LOG_ERROR("Failed to allocate the memory needed for "
                                   "storing frame data.");
@@ -138,7 +139,7 @@ bool load_asset(Asset* asset, const char* filename) {
             case CHUNK_TYPE_NAME: {
                 u32 names_size = data_size + asset->sequences_count
                                - sizeof(u16) * asset->sequences_count;
-                char* names = ALLOCATE(char, names_size);
+                char* names = ALLOCATE(heap, char, names_size);
                 if (!names) {
                     LOG_ERROR("Failed to allocate the memory needed to store "
                               "the sequence names.");
@@ -171,24 +172,25 @@ bool load_asset(Asset* asset, const char* filename) {
 
 error:
     clear(&buffer);
-    unload_asset(asset);
+    unload_asset(asset, heap);
     return false;
 }
 
-void unload_asset(Asset* asset) {
+void unload_asset(Asset* asset, Heap* heap) {
     for (int i = 0; i < asset->sequences_count; ++i) {
-        SAFE_DEALLOCATE(asset->sequences[i].frames);
+        SAFE_DEALLOCATE(heap, asset->sequences[i].frames);
     }
-    SAFE_DEALLOCATE(asset->sequences->name);
-    SAFE_DEALLOCATE(asset->sequences);
+    SAFE_DEALLOCATE(heap, asset->sequences->name);
+    SAFE_DEALLOCATE(heap, asset->sequences);
 }
 
-bool save_asset(Asset* asset, const char* filename) {
+bool save_asset(Asset* asset, const char* filename, Stack* stack) {
     ByteBuffer buffer = {};
+    buffer.stack = stack;
 
     // Header
 
-    insert64(&buffer, ANI_SIGNATURE);
+    insert64(&buffer, ani_signature);
     insert16(&buffer, 1); // version
 
     // Sequence Chunk
@@ -246,7 +248,8 @@ bool save_asset(Asset* asset, const char* filename) {
         return false;
     }
 
-    bool saved = save_whole_file(FileType::Asset_Animation, filename, buffer.data, buffer.position);
+    bool saved = save_whole_file(FileType::Asset_Animation, filename,
+                                 buffer.data, buffer.position, stack);
     clear(&buffer);
 
     return saved;

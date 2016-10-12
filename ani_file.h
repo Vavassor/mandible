@@ -1,5 +1,8 @@
 #pragma once
 
+struct Stack;
+struct Heap;
+
 // .ani animation file format
 namespace ani {
 
@@ -20,8 +23,8 @@ struct Asset {
     int sequences_count;
 };
 
-bool load_asset(Asset* asset, const char* filename);
-void unload_asset(Asset* asset);
-bool save_asset(Asset* asset, const char* filename);
+bool load_asset(Asset* asset, const char* filename, Heap* heap, Stack* stack);
+void unload_asset(Asset* asset, Heap* heap);
+bool save_asset(Asset* asset, const char* filename, Stack* stack);
 
 } // namespace ani
